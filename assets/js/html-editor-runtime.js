@@ -1068,35 +1068,26 @@
         let dy = (newClientY - (dragState.startY - dragState.clickOffsetY)) + sdy;
 
         let elementRotation = 0;
-        let isStandaloneElement = true;
         try {
-            let parent = dragState.el.parentElement;
-            while (parent && parent.nodeType === 1) {
-                const parentTransform = window.getComputedStyle(parent).transform;
-                if (parentTransform && parentTransform !== 'none') {
-                    isStandaloneElement = false;
-                    break;
-                }
-                parent = parent.parentElement;
-            }
-            if (isStandaloneElement) {
-                elementRotation = getCurrentRotation(dragState.el);
-            } else {
-                elementRotation = getTotalRotationWithParents(dragState.el);
-            }
+            // FIX: Only use the PARENT'S cumulative rotation for the delta calculation
+            // because the element's own translate(x,y) is applied BEFORE its own rotate(r)
+            // in the translate(...) rotate(...) transform chain.
+            elementRotation = dragState.el.parentElement && dragState.el.parentElement.nodeType === 1
+                ? getTotalRotationWithParents(dragState.el.parentElement)
+                : 0;
         } catch (err) {
             console.warn('Error determining element rotation:', err);
             elementRotation = 0;
         }
 
         if (elementRotation !== 0) {
-            const rad = (-elementRotation * Math.PI) / 180;
-            const cos = Math.cos(rad);
-            const sin = Math.sin(rad);
-            const rotatedDx = dx * cos - dy * sin;
-            const rotatedDy = dx * sin + dy * cos;
-            dx = rotatedDx;
-            dy = rotatedDy;
+            const rotation = (elementRotation * Math.PI) / 180;
+            const cos = Math.cos(rotation);
+            const sin = Math.sin(rotation);
+            const adjustedDeltaX = dx * cos + dy * sin;
+            const adjustedDeltaY = -dx * sin + dy * cos;
+            dx = adjustedDeltaX;
+            dy = adjustedDeltaY;
         }
 
         const tx = Math.max(dragState.minTx, Math.min(dragState.maxTx, dragState.tx + dx));
@@ -1492,15 +1483,23 @@
                         let dx = me.clientX - startX;
                         let dy = me.clientY - startY;
 
-                        // ✅ FIX: Rotate the delta by the inverse of the element's rotation
-                        // This ensures resize works correctly on rotated elements
-                        if (rotationDeg !== 0) {
-                            const cos = Math.cos(-rotationRad);
-                            const sin = Math.sin(-rotationRad);
-                            const rotatedDx = dx * cos - dy * sin;
-                            const rotatedDy = dx * sin + dy * cos;
-                            dx = rotatedDx;
-                            dy = rotatedDy;
+                        // ✅ FIX: Rotate the delta by the inverse of the element's CUMULATIVE rotation
+                        // This ensures resize works correctly on rotated elements (including nested ones)
+                        let totalRotationDeg = 0;
+                        try {
+                            totalRotationDeg = getTotalRotationWithParents(currentSelectedImage);
+                        } catch (e) {
+                            totalRotationDeg = rotationDeg;
+                        }
+
+                        if (totalRotationDeg !== 0) {
+                            const totalRotationRad = (totalRotationDeg * Math.PI) / 180;
+                            const cos = Math.cos(totalRotationRad);
+                            const sin = Math.sin(totalRotationRad);
+                            const adjustedDeltaX = dx * cos + dy * sin;
+                            const adjustedDeltaY = -dx * sin + dy * cos;
+                            dx = adjustedDeltaX;
+                            dy = adjustedDeltaY;
                         }
 
                         let nw = startW, nh = startH;
@@ -2072,10 +2071,18 @@
         const selector = getElementSelector(el);
         const tag = (el.tagName || 'unknown').toLowerCase();
         const cls = typeof el.className === 'string' && el.className.trim() ? '.' + el.className.trim().split(/\s+/).join('.') : '';
+
+        // Ensure element has a unique action id for reliable identification
+        let actionId = el.getAttribute('data-action-id');
+        if (!actionId) {
+            actionId = 'action-' + Math.random().toString(36).substr(2, 9) + '-' + Date.now();
+            el.setAttribute('data-action-id', actionId);
+        }
+
         const action = {
             type: actionType || eventType || 'custom', event: eventType || actionType || 'custom',
             eventAttribute: extra.eventAttribute || '', element: tag + cls,
-            elementId: el.id || selector, function: fm ? fm[1] : '', parameters: fm ? fm[2] : '',
+            elementId: actionId, function: fm ? fm[1] : '', parameters: fm ? fm[2] : '',
             code: nc, selector, description: extra.description || '', targetElement: tag,
             clickedElement: extra.clickedElement || tag
         };
@@ -3540,6 +3547,13 @@
             tsKeys.forEach(k => { if (ts[k]) span.style[k] = ts[k]; });
             if (ts.textShadow && ts.textShadow !== 'none') span.style.textShadow = ts.textShadow;
             span.style.fontSize = fs; span.style.lineHeight = lh;
+            // Apply explicit styles from data.style to override inherited
+            if (data.style?.color) span.style.color = data.style.color;
+            if (data.style?.fontFamily) span.style.fontFamily = data.style.fontFamily;
+            if (data.style?.fontWeight) span.style.fontWeight = data.style.fontWeight;
+            if (data.style?.fontStyle) span.style.fontStyle = data.style.fontStyle;
+            if (data.style?.textDecoration) span.style.textDecoration = data.style.textDecoration;
+            if (data.style?.letterSpacing) span.style.letterSpacing = data.style.letterSpacing;
             const hasCp = data.centerPosition && typeof data.centerPosition.left === 'number';
             let parent = ctx?.parent || document.body, before = null;
             if (hasCp) {
@@ -3845,7 +3859,12 @@
         if (data.type === 'EXECUTE_ACTION_IN_IFRAME' && data.action) {
             const act = data.action;
             try {
-                let target2 = act.selector ? document.querySelector(act.selector) : (act.elementId ? document.getElementById(act.elementId) : null);
+                let target2 = null;
+                if (act.elementId && act.elementId.startsWith('action-')) {
+                    target2 = document.querySelector(`[data-action-id="${act.elementId}"]`);
+                } else {
+                    target2 = act.selector ? document.querySelector(act.selector) : (act.elementId ? document.getElementById(act.elementId) : null);
+                }
                 if (target2) {
                     if (act.type === 'click' && act.function && typeof window[act.function] === 'function') {
                         const params = act.parameters ? act.parameters.split(',').map(p => { const t2 = p.trim(); return !isNaN(t2) && t2 !== '' ? parseFloat(t2) : t2.replace(/^['"]|['"]$/g, ''); }) : [];
@@ -3940,6 +3959,36 @@
             } catch (error) {
                 console.error('[UPDATE_MUSIC_IN_HTML] Error updating music:', error);
                 postMsg({ type: 'MUSIC_HTML_UPDATE_ERROR', error: error.message });
+            }
+        }
+
+        // ✅ Handle UPDATE_MAP_ADDRESS - Update address text and Google Maps links
+        if (data.type === 'UPDATE_MAP_ADDRESS') {
+            const { id, address } = data;
+            if (!address) return;
+
+            console.log('[UPDATE_MAP_ADDRESS] Syncing address:', address, 'for map ID:', id);
+
+            // 1. Update text in all elements with class .location-addr
+            const addrEls = document.querySelectorAll('.location-addr');
+            addrEls.forEach(el => {
+                el.innerText = address;
+                // Also update any data-editable if it matches
+                if (el.getAttribute('data-editable') === 'location-addr') {
+                    // Selection handles will need update if this element is selected
+                    if (currentSelectedImage === el) setTimeout(() => showSelectionHandles(el), 10);
+                }
+            });
+
+            // 2. Update Google Maps href in elements with data-edit-map-href matching id
+            if (id) {
+                const mapLinks = document.querySelectorAll(`[data-edit-map-href="${id}"]`);
+                // Standard Google Maps search URL
+                const searchUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`;
+                mapLinks.forEach(el => {
+                    el.href = searchUrl;
+                    console.log('[UPDATE_MAP_ADDRESS] Updated link href to:', searchUrl);
+                });
             }
         }
     });
