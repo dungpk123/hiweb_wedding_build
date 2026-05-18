@@ -204,6 +204,7 @@
 
         // ── Capture element CSS ───────────────────────────────────────────────
         captureElementCSS(el) {
+            if (!el) return {};
             const css = {};
             const style = el.style;
 
@@ -223,6 +224,7 @@
             if (style.left) css.left = style.left;
             if (style.top) css.top = style.top;
             if (style.zIndex) css.zIndex = style.zIndex;
+            if (el.dataset.zIndex) css.datasetZIndex = el.dataset.zIndex;
 
             // Text properties
             if (style.fontSize) css.fontSize = style.fontSize;
@@ -234,6 +236,7 @@
             if (style.lineHeight) css.lineHeight = style.lineHeight;
             if (style.letterSpacing) css.letterSpacing = style.letterSpacing;
             if (style.textDecoration) css.textDecoration = style.textDecoration;
+            if (style.textTransform) css.textTransform = style.textTransform;
 
             // Visual properties
             if (style.opacity) css.opacity = style.opacity;
@@ -251,11 +254,7 @@
             if (style.transformOrigin) css.transformOrigin = style.transformOrigin;
             if (style.display) css.display = style.display;
             if (style.overflow) css.overflow = style.overflow;
-            if (style.overflowX) css.overflowX = style.overflowX;
-            if (style.overflowY) css.overflowY = style.overflowY;
             if (style.whiteSpace) css.whiteSpace = style.whiteSpace;
-            if (style.wordBreak) css.wordBreak = style.wordBreak;
-            if (style.overflowWrap) css.overflowWrap = style.overflowWrap;
 
             // Animation
             if (style.animation) css.animation = style.animation;
@@ -291,12 +290,44 @@
 
         // ── Capture background state ──────────────────────────────────────────
         captureBackgroundState() {
-            try {
-                const bgData = sessionStorage.getItem('html-editor-background');
-                return bgData ? JSON.parse(bgData) : null;
-            } catch {
-                return null;
+            const body = document.body;
+            if (!body) return null;
+            const computedStyle = getComputedStyle(body);
+            return {
+                backgroundColor: computedStyle.backgroundColor,
+                backgroundImage: computedStyle.backgroundImage,
+                backgroundSize: computedStyle.backgroundSize,
+                backgroundPosition: computedStyle.backgroundPosition,
+                backgroundRepeat: computedStyle.backgroundRepeat,
+                backgroundAttachment: computedStyle.backgroundAttachment
+            };
+        }
+
+        // ── Capture specific element state ───────────────────────────────────
+        captureElementState(el) {
+            if (!el) return null;
+            const id = this.getElementId(el);
+            const state = {
+                id,
+                css: this.captureElementCSS(el),
+                content: this.captureElementContent(el),
+                metadata: {}
+            };
+
+            // Only capture background for canvas or if explicitly requested
+            if (id === 'canvas' || el === document.body) {
+                state.metadata.background = this.captureBackgroundState();
             }
+            
+            return state;
+        }
+
+        // ── Apply specific element state ────────────────────────────────────
+        applyElementState(el, state) {
+            if (!el || !state) return;
+            if (state.css) this.applyElementCSS(el, state.css);
+            if (state.content !== undefined) this.applyElementContent(el, state.content);
+            if (state.metadata?.background) this.applyBackgroundState(state.metadata.background);
         }
 
         // ── Apply state to DOM ────────────────────────────────────────────────
@@ -370,11 +401,14 @@
 
         // ── Apply CSS to element ──────────────────────────────────────────────
         applyElementCSS(el, css) {
+            if (!el || !css) return;
+
             if (css.cssText) {
                 el.style.cssText = css.cssText;
             }
+            
             Object.entries(css).forEach(([prop, value]) => {
-                if (prop === 'cssText' || prop === 'nested') return;
+                if (prop === 'cssText' || prop === 'nested' || prop === 'datasetZIndex') return;
                 if (prop === 'tx' || prop === 'ty' || prop === 'rotation') {
                     // Dataset properties
                     if (prop === 'tx') el.dataset.editorTx = value;
@@ -382,14 +416,20 @@
                     if (prop === 'rotation') el.dataset.editorRotation = value;
                 } else {
                     // Style properties
-                    el.style[prop] = value;
+                    try {
+                        el.style[prop] = value;
+                    } catch (e) { }
                 }
             });
 
-            // Update CSS variables for animations
+            if (css.datasetZIndex !== undefined) {
+                el.dataset.zIndex = css.datasetZIndex;
+            }
+
+            // Update CSS variables for animations/transforms
             if (css.tx !== undefined || css.ty !== undefined) {
-                el.style.setProperty('--el-tx', (css.tx || 0) + 'px');
-                el.style.setProperty('--el-ty', (css.ty || 0) + 'px');
+                el.style.setProperty('--el-tx', (parseFloat(css.tx) || 0) + 'px');
+                el.style.setProperty('--el-ty', (parseFloat(css.ty) || 0) + 'px');
             }
 
             if (Array.isArray(css.nested)) {
@@ -408,7 +448,7 @@
 
         // ── Apply content to element ──────────────────────────────────────────
         applyElementContent(el, content) {
-            if (!content) return;
+            if (!el || content === undefined) return;
 
             // For images
             if (el.tagName === 'IMG') {
@@ -422,7 +462,7 @@
                 }
             }
             // For text - use innerHTML to preserve formatting
-            else if (el.hasAttribute('data-editable') || el.hasAttribute('data-editor-id')) {
+            else if (el.hasAttribute('data-editable') || el.hasAttribute('data-editor-id') || el.isContentEditable) {
                 el.innerHTML = content;
             }
         }
@@ -434,23 +474,36 @@
             try {
                 sessionStorage.setItem('html-editor-background', JSON.stringify(bgData));
 
-                // Apply to DOM
-                document.getElementById('__bg_override__')?.remove();
-                const style = document.createElement('style');
-                style.id = '__bg_override__';
+                // Apply to DOM via style override
+                let override = document.getElementById('__bg_override__');
+                if (!override) {
+                    override = document.createElement('style');
+                    override.id = '__bg_override__';
+                    document.head.appendChild(override);
+                }
 
                 let css = '';
                 if (bgData.backgroundImage && bgData.backgroundImage !== 'none') {
-                    css = `html,body{background-image:${bgData.backgroundImage}!important;background-size:${bgData.backgroundSize || 'cover'}!important;background-position:${bgData.backgroundPosition || 'center'}!important;background-color:${bgData.backgroundColor || 'transparent'}!important;}`;
+                    css = `html,body{background-image:${bgData.backgroundImage}!important;background-size:${bgData.backgroundSize || 'cover'}!important;background-position:${bgData.backgroundPosition || 'center'}!important;background-color:${bgData.backgroundColor || 'transparent'}!important;background-repeat:${bgData.backgroundRepeat || 'no-repeat'}!important;background-attachment:${bgData.backgroundAttachment || 'scroll'}!important;}`;
                 } else if (bgData.background && bgData.background !== 'none') {
-                    css = `html,body{background:${bgData.background}!important;}`;
+                    css = `html,body{background:${bgData.background}!important;background-image:none!important;}`;
                 } else if (bgData.backgroundColor) {
                     css = `html,body{background-color:${bgData.backgroundColor}!important;background-image:none!important;}`;
                 }
 
                 if (css) {
-                    style.textContent = css;
-                    document.head.appendChild(style);
+                    override.textContent = css;
+                }
+
+                // Also apply directly to body as fallback
+                const body = document.body;
+                if (body) {
+                    if (bgData.backgroundColor !== undefined) body.style.backgroundColor = bgData.backgroundColor;
+                    if (bgData.backgroundImage !== undefined) body.style.backgroundImage = bgData.backgroundImage;
+                    if (bgData.backgroundSize !== undefined) body.style.backgroundSize = bgData.backgroundSize;
+                    if (bgData.backgroundPosition !== undefined) body.style.backgroundPosition = bgData.backgroundPosition;
+                    if (bgData.backgroundRepeat !== undefined) body.style.backgroundRepeat = bgData.backgroundRepeat;
+                    if (bgData.backgroundAttachment !== undefined) body.style.backgroundAttachment = bgData.backgroundAttachment;
                 }
             } catch (e) {
                 console.error('[State Manager] Failed to apply background:', e);

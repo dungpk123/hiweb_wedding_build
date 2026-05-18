@@ -1,22 +1,27 @@
 [
   {
     "id": "1000",
-    "url": "/assets/images/music/music.png"
+    "url": "/assets/images/music/music.png",
+    "name": "Note nhạc"
   },
   {
     "id": "1001",
-    "url": "/assets/images/music/playing-icon.png"
+    "url": "/assets/images/music/playing-icon.png",
+    "name": "Đang phát"
   },
   {
     "id": "1002",
-    "url": "/assets/images/music/playing-icon2.jpg"
+    "url": "/assets/images/music/playing-icon2.jpg",
+    "name": "Đĩa than"
   },
   {
     "id": "1003",
-    "url": "/assets/images/music/playing-icon3.jpg"
+    "url": "/assets/images/music/playing-icon3.jpg",
+    "name": "Sóng âm"
   },
   {
     "id": "1004",
-    "url": "/assets/images/music/playing-icon4.jpg"
+    "url": "/assets/images/music/playing-icon4.jpg",
+    "name": "Trái tim"
   }
 ]

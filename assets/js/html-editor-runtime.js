@@ -6,7 +6,6 @@
 
     // ── Clear sessionStorage on fresh load ──────────────────────────────────
     try {
-        // Check if scope has changed
         const currentScope = window.__htmlEditorScope;
         const lastScope = sessionStorage.getItem('html-editor-last-scope');
 
@@ -18,25 +17,44 @@
                 sessionStorage.removeItem('html-editor-background');
                 sessionStorage.removeItem('html-editor-text-content');
             }
-            // Save current scope
             sessionStorage.setItem('html-editor-last-scope', currentScope.key);
-        } else {
-            // No scope, clear everything
-            sessionStorage.removeItem('html-editor-transforms');
-            sessionStorage.removeItem('html-editor-rotations');
-            sessionStorage.removeItem('html-editor-last-scope');
         }
     } catch (e) {
-        console.warn('[HTML Editor] Could not clear sessionStorage:', e);
+        console.warn('[HTML Editor] Could not sync sessionStorage scope:', e);
     }
+
+    const getScopedKey = (key) => {
+        if (!window.__htmlEditorScope || !window.__htmlEditorScope.key) return key;
+        return `scoped:${window.__htmlEditorScope.key}:${key}`;
+    };
 
 
     // ── Restore background on page load ───────────────────────────────────────
     const restoreBackgroundOnLoad = () => {
         try {
-            const savedBg = sessionStorage.getItem('html-editor-background');
-            if (savedBg) {
-                const bgData = JSON.parse(savedBg);
+            let bgData = null;
+            const scope = window.__htmlEditorScope;
+
+            // 1. Try to read from persistent template state in localStorage (Source of Truth)
+            // This ensures consistent loading when template changes or page reloads.
+            if (scope && scope.key) {
+                const editorStateKey = 'editor-state:' + scope.key;
+                const savedState = localStorage.getItem(editorStateKey);
+                if (savedState) {
+                    const state = JSON.parse(savedState);
+                    if (state && state.metadata && state.metadata.background) {
+                        bgData = state.metadata.background;
+                    }
+                }
+            }
+
+            // 2. Fallback to active session storage
+            if (!bgData) {
+                const savedBg = sessionStorage.getItem('html-editor-background');
+                if (savedBg) bgData = JSON.parse(savedBg);
+            }
+
+            if (bgData) {
                 const s = document.createElement('style');
                 s.id = '__bg_override__';
                 const bs = bgData;
@@ -461,7 +479,13 @@
     const parentDragController = new ParentDragController();
 
     // ── Storage helpers ───────────────────────────────────────────────────────
-    const STORAGE_KEY = 'html-editor-transforms';
+    // const getScopedKey = (key) => {
+    //     const scope = window.__htmlEditorScope;
+    //     if (scope && scope.key) return `scoped:${scope.key}:${key}`;
+    //     return key;
+    // };
+
+    const STORAGE_KEY = getScopedKey('html-editor-transforms');
 
     const readTransformsFromSession = (key) => {
         try { return JSON.parse(sessionStorage.getItem(key) || '{}'); } catch { return {}; }
@@ -523,7 +547,7 @@
                 }
             });
             const data = JSON.stringify(textContent);
-            if (isLocal) localStorage.setItem('html-editor-text-content', data);
+            if (isLocal) localStorage.setItem(getScopedKey('html-editor-text-content'), data);
             sessionStorage.setItem('html-editor-text-content', data);
             return true;
         } catch (e) {
@@ -534,7 +558,7 @@
 
     const restoreTextContentFromLocalStorage = () => {
         try {
-            const saved = localStorage.getItem('html-editor-text-content');
+            const saved = localStorage.getItem(getScopedKey('html-editor-text-content'));
             if (!saved) return;
             const textContent = JSON.parse(saved);
             Object.keys(textContent).forEach(id => {
@@ -566,7 +590,7 @@
         try {
             const bgData = sessionStorage.getItem('html-editor-background');
             if (bgData) {
-                localStorage.setItem('html-editor-background', bgData);
+                localStorage.setItem(getScopedKey('html-editor-background'), bgData);
             }
             return true;
         } catch (e) {
@@ -593,7 +617,7 @@
                     zIndexData[id] = el.style.zIndex;
                 }
             });
-            localStorage.setItem('html-editor-z-index', JSON.stringify(zIndexData));
+            localStorage.setItem(getScopedKey('html-editor-z-index'), JSON.stringify(zIndexData));
             console.log('[Z-Index Persistence] Saved z-index data:', zIndexData);
             return true;
         } catch (e) {
@@ -604,7 +628,7 @@
 
     const restoreZIndexFromLocalStorage = () => {
         try {
-            const saved = localStorage.getItem('html-editor-z-index');
+            const saved = localStorage.getItem(getScopedKey('html-editor-z-index'));
             if (!saved) return;
             const zIndexData = JSON.parse(saved);
             Object.keys(zIndexData).forEach(id => {
@@ -833,9 +857,15 @@
         let translateFound = false;
         fns.forEach(fn => {
             if (fn.name === 'translate') {
-                const [a, b] = fn.value.split(',');
-                tx = parseFloat(a) || 0; ty = parseFloat(b) || 0;
-                translateFound = true;
+                // ✅ FIX: Giữ lại các translate dạng % (thường dùng để căn giữa trong template)
+                // Chỉ trích xuất các translate dạng pixel do Editor quản lý.
+                if (fn.value.includes('%')) {
+                    others.push(fn.name + '(' + fn.value + ')');
+                } else {
+                    const [a, b] = fn.value.split(',');
+                    tx = parseFloat(a) || 0; ty = parseFloat(b) || 0;
+                    translateFound = true;
+                }
             } else { others.push(fn.name + '(' + fn.value + ')'); }
         });
         const hasRotate = others.some(o => o.startsWith('rotate('));
@@ -1001,6 +1031,14 @@
         };
         if (typeof x === 'number' && typeof y === 'number') {
             const els = document.elementsFromPoint?.(x, y) || document.msElementsFromPoint?.(x, y) || [];
+            // Nếu có parent drag enabled, ưu tiên tìm container được phép drag trước
+            for (const el of els) {
+                const norm = el.nodeType === 3 ? el.parentElement : el;
+                if (isEditableNode(norm)) {
+                    const id = getEditableId(norm);
+                    if (id && allowParentDragging[id] && hasEditableChildren(norm)) return norm;
+                }
+            }
             for (const el of els) { const f = find(el); if (f) return f; }
         }
         return find(target);
@@ -1025,8 +1063,8 @@
         if (!dragState) return;
         const tx = dragState.edgeScrollTargetVx || 0;
         const ty = dragState.edgeScrollTargetVy || 0;
-        const ax = (dragState.edgeScrollSmoothedVx || 0) * 0.88 + tx * 0.12;
-        const ay = (dragState.edgeScrollSmoothedVy || 0) * 0.88 + ty * 0.12;
+        const ax = (dragState.edgeScrollSmoothedVx || 0) * 0.7 + tx * 0.3;
+        const ay = (dragState.edgeScrollSmoothedVy || 0) * 0.7 + ty * 0.3;
         dragState.edgeScrollSmoothedVx = ax;
         dragState.edgeScrollSmoothedVy = ay;
         if (Math.abs(ax) < 0.1 && Math.abs(ay) < 0.1 && Math.abs(tx) < 0.04 && Math.abs(ty) < 0.04) {
@@ -1057,6 +1095,8 @@
     /** Đồng bộ transform kéo theo toạ độ tay lưu trong dragState (dùng lại sau auto-scroll khi không có pointermove mới). */
     function syncDragPositionFromPointerClient() {
         if (!dragState || typeof dragState.lastPointerClientX !== 'number') return;
+        // Update cached rect for accurate edge scroll
+        dragState._cachedRect = dragState.el.getBoundingClientRect();
         const clientX = dragState.lastPointerClientX;
         const clientY = dragState.lastPointerClientY;
         const sdx = (window.scrollX - dragState.scrollStartX) + (dragState.parentScrollAccumX || 0);
@@ -1067,27 +1107,22 @@
         let dx = (newClientX - (dragState.startX - dragState.clickOffsetX)) + sdx;
         let dy = (newClientY - (dragState.startY - dragState.clickOffsetY)) + sdy;
 
-        let elementRotation = 0;
-        try {
-            // FIX: Only use the PARENT'S cumulative rotation for the delta calculation
-            // because the element's own translate(x,y) is applied BEFORE its own rotate(r)
-            // in the translate(...) rotate(...) transform chain.
-            elementRotation = dragState.el.parentElement && dragState.el.parentElement.nodeType === 1
-                ? getTotalRotationWithParents(dragState.el.parentElement)
-                : 0;
-        } catch (err) {
-            console.warn('Error determining element rotation:', err);
-            elementRotation = 0;
+        // Cache parent rotation — không thay đổi trong suốt drag, tính 1 lần
+        if (dragState._parentRotation === undefined) {
+            try {
+                dragState._parentRotation = dragState.el.parentElement && dragState.el.parentElement.nodeType === 1
+                    ? getTotalRotationWithParents(dragState.el.parentElement)
+                    : 0;
+            } catch { dragState._parentRotation = 0; }
         }
+        const elementRotation = dragState._parentRotation;
 
         if (elementRotation !== 0) {
             const rotation = (elementRotation * Math.PI) / 180;
             const cos = Math.cos(rotation);
             const sin = Math.sin(rotation);
-            const adjustedDeltaX = dx * cos + dy * sin;
-            const adjustedDeltaY = -dx * sin + dy * cos;
-            dx = adjustedDeltaX;
-            dy = adjustedDeltaY;
+            dx = dx * cos + dy * sin;
+            dy = -dx * sin + dy * cos;
         }
 
         const tx = Math.max(dragState.minTx, Math.min(dragState.maxTx, dragState.tx + dx));
@@ -1104,32 +1139,44 @@
         const preciseTy = Number(ty.toFixed(2));
         dragState.el.dataset.editorTx = String(preciseTx);
         dragState.el.dataset.editorTy = String(preciseTy);
+        // CSS vars — batch với transform write trên, không cần setProperty riêng
+        dragState.el.style.cssText = dragState.el.style.cssText; // no-op flush trick skipped — direct set below
         dragState.el.style.setProperty('--el-tx', preciseTx + 'px');
         dragState.el.style.setProperty('--el-ty', preciseTy + 'px');
 
-        restoreElementIdentity(dragState.el, dragState.identitySnapshot);
+        // restoreElementIdentity bị skip trong drag — chỉ cần restore khi drop
+        // (tránh đọc/ghi attributes + cssText mỗi frame)
+
+        // updateHandlesRect: throttle bằng RAF riêng, không chạy mỗi frame
         if (currentSelectedImage === dragState.el && selectionHandles) {
-            updateHandlesRect(dragState.el);
+            if (!dragState._handlesRafId) {
+                dragState._handlesRafId = requestAnimationFrame(() => {
+                    dragState._handlesRafId = null;
+                    if (dragState && currentSelectedImage === dragState.el && selectionHandles) {
+                        updateHandlesRect(dragState.el);
+                    }
+                });
+            }
         }
 
+        // Z-index scan: mỗi 500ms để mượt mà hơn khi drag
         const nowZ = Date.now();
-        if (!dragState._lastZIndexScanAt || nowZ - dragState._lastZIndexScanAt > 72) {
+        if (!dragState._lastZIndexScanAt || nowZ - dragState._lastZIndexScanAt > 500) {
             dragState._lastZIndexScanAt = nowZ;
             const rect = dragState.el.getBoundingClientRect();
-            const checkPoints = [
-                { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 },
-                { x: rect.left + 5, y: rect.top + 5 }, { x: rect.right - 5, y: rect.top + 5 },
-                { x: rect.left + 5, y: rect.bottom - 5 }, { x: rect.right - 5, y: rect.bottom - 5 }
-            ];
+            dragState._cachedRect = rect;
+            // Chỉ check center point thay vì 5 điểm — đủ cho hầu hết trường hợp
+            const cx = rect.left + rect.width / 2;
+            const cy = rect.top + rect.height / 2;
             let maxZAtPosition = 0;
-            checkPoints.forEach(point => {
-                getElementsAtPosition(point.x, point.y, dragState.el).forEach(el => {
-                    try {
-                        const z = parseInt(window.getComputedStyle(el).zIndex, 10);
-                        if (!isNaN(z) && z > maxZAtPosition) maxZAtPosition = z;
-                    } catch { }
-                });
-            });
+            const elementsAtPos = getElementsAtPosition(cx, cy, dragState.el);
+            for (let i = 0; i < Math.min(elementsAtPos.length, 10); i++) { // Limit to 10 elements for performance
+                const el = elementsAtPos[i];
+                try {
+                    const z = parseInt(window.getComputedStyle(el).zIndex, 10);
+                    if (!isNaN(z) && z > maxZAtPosition) maxZAtPosition = z;
+                } catch { }
+            }
             const currentZ = parseInt(dragState.el.style.zIndex, 10) || 0;
             if (maxZAtPosition > currentZ) {
                 const newZ = String(maxZAtPosition + 1);
@@ -1146,21 +1193,21 @@
             dragState.hoverStartTime = Date.now(); dragState.lastX = clientX; dragState.lastY = clientY;
         }
 
-        const THRESH = 100;
-        const MAX_V = 11;
-        const r = dragState.el.getBoundingClientRect();
+        const THRESH = 60;
+        const MAX_V = 25;
+        const r = dragState._cachedRect || dragState.el.getBoundingClientRect();
         const ih = window.innerHeight;
         const iw = window.innerWidth;
         const edgePt = dragState.lastPointerTypeForEdge || 'mouse';
         let targetVx = 0, targetVy = 0;
         if (edgePt === 'mouse') {
-            if (r.top < THRESH && window.scrollY > 0) targetVy = -smoothstep01((THRESH - r.top) / THRESH) * MAX_V;
-            else if (r.bottom > ih - THRESH) targetVy = smoothstep01((r.bottom - (ih - THRESH)) / THRESH) * MAX_V;
-            if (r.left < THRESH && window.scrollX > 0) targetVx = -smoothstep01((THRESH - r.left) / THRESH) * MAX_V;
-            else if (r.right > iw - THRESH) targetVx = smoothstep01((r.right - (iw - THRESH)) / THRESH) * MAX_V;
+            if (r.top < THRESH && window.scrollY > 0) targetVy = -((THRESH - r.top) / THRESH) * MAX_V;
+            else if (r.bottom > ih - THRESH) targetVy = ((r.bottom - (ih - THRESH)) / THRESH) * MAX_V;
+            if (r.left < THRESH && window.scrollX > 0) targetVx = -((THRESH - r.left) / THRESH) * MAX_V;
+            else if (r.right > iw - THRESH) targetVx = ((r.right - (iw - THRESH)) / THRESH) * MAX_V;
         } else {
-            if (r.top < THRESH && window.scrollY > 0) targetVy = -smoothstep01((THRESH - r.top) / THRESH) * MAX_V;
-            else if (r.bottom > ih - THRESH) targetVy = smoothstep01((r.bottom - (ih - THRESH)) / THRESH) * MAX_V;
+            if (r.top < THRESH && window.scrollY > 0) targetVy = -((THRESH - r.top) / THRESH) * MAX_V;
+            else if (r.bottom > ih - THRESH) targetVy = ((r.bottom - (ih - THRESH)) / THRESH) * MAX_V;
         }
         dragState.edgeScrollTargetVx = targetVx;
         dragState.edgeScrollTargetVy = targetVy;
@@ -1480,6 +1527,13 @@
                     if (e.pointerId != null && e.currentTarget?.setPointerCapture) try { e.currentTarget.setPointerCapture(e.pointerId); } catch { }
 
                     const onMove = (me) => {
+                        if (!isResizing) {
+                            isResizing = true;
+                            // Capture initial state for command history if not already captured
+                            if (currentSelectedImage && !currentSelectedImage.__beforeState) {
+                                currentSelectedImage.__beforeState = window.editorStateManager?.captureElementState(currentSelectedImage);
+                            }
+                        }
                         let dx = me.clientX - startX;
                         let dy = me.clientY - startY;
 
@@ -1554,6 +1608,21 @@
                             }
                             const eid = imgId || textId;
                             if (eid) saveElementTransform(eid, finalT);
+
+                            // ── COMMAND COMMIT ──
+                            if (isResizing && currentSelectedImage.__beforeState) {
+                                const afterState = window.editorStateManager?.captureElementState(currentSelectedImage);
+                                postMsg({
+                                    type: 'COMMIT_COMMAND',
+                                    command: {
+                                        type: 'RESIZE',
+                                        elementId: eid,
+                                        before: currentSelectedImage.__beforeState,
+                                        after: afterState
+                                    }
+                                });
+                                delete currentSelectedImage.__beforeState;
+                            }
 
                             // ── UPDATE ORIGINAL SIZE BEFORE UNSETTING FLAG ──────────────────────────
                             // Update the original size so style restore doesn't revert to old size
@@ -1635,7 +1704,11 @@
 
                 const onMove = (me) => {
                     if (!isDragging || !currentSelectedImage) return;
-                    dragStarted = true;
+                    if (!dragStarted) {
+                        dragStarted = true;
+                        // Capture initial state for command history
+                        currentSelectedImage.__beforeState = window.editorStateManager?.captureElementState(currentSelectedImage);
+                    }
                     const angle = calcAngle(cx, cy, me.clientX, me.clientY);
                     const newRot = normalizeRotation(startRotation + (angle - startAngle));
                     const isTextEl = currentSelectedImage.getAttribute('data-editable') || currentSelectedImage.getAttribute('data-editor-id');
@@ -1694,6 +1767,21 @@
                         }
                         postMsg({ type: 'HTML_DRAG_CHANGE', id: eid, tx: toNum(currentSelectedImage.dataset.editorTx), ty: toNum(currentSelectedImage.dataset.editorTy), rotation: finalRot, transform: finalT });
                         currentSelectedImage.style.transform = finalT;
+
+                        // ── COMMAND COMMIT ──
+                        if (currentSelectedImage.__beforeState) {
+                            const afterState = window.editorStateManager?.captureElementState(currentSelectedImage);
+                            postMsg({
+                                type: 'COMMIT_COMMAND',
+                                command: {
+                                    type: 'ROTATE',
+                                    elementId: eid,
+                                    before: currentSelectedImage.__beforeState,
+                                    after: afterState
+                                }
+                            });
+                            delete currentSelectedImage.__beforeState;
+                        }
 
                         // ✅ FIX: Restore animation after setting final transform
                         if (savedAnimation) {
@@ -1789,18 +1877,29 @@
                 // Cloned element starts unlocked regardless of parent lock state
                 clone.removeAttribute('data-locked');
                 clone.classList.remove('editor-element-locked');
+                const beforeState = window.editorStateManager?.captureCurrentState();
                 // Insert clone BEFORE original so it appears at the same visual position
                 element.parentNode.insertBefore(clone, element);
                 saveElementTransform(newId, clone.style.transform || '');
                 saveTextContentToStorage(false); // Lưu trạng thái văn bản mới vào session
                 clearEditing(); showSelectionHandles(clone); clone.classList.add('editing');
+
+                const afterState = window.editorStateManager?.captureCurrentState();
+                postMsg({
+                    type: 'COMMIT_COMMAND',
+                    command: {
+                        type: 'DUPLICATE',
+                        elementId: newId,
+                        before: beforeState,
+                        after: afterState
+                    }
+                });
+
                 postMsg({ type: 'ELEMENT_DUPLICATED', oldId, id: newId, tab });
                 postMsg({ type: 'FOCUS_FIELD', id: newId, tab });
 
-                // ✅ FIX: Trigger saveStateDebounced after copying an element
                 if (window.editorStateManager) {
                     window.editorStateManager.saveStateDebounced();
-                    console.log('[HTML Editor Runtime] Triggered saveStateDebounced after element duplication.');
                 }
             };
 
@@ -1820,10 +1919,26 @@
                 showConfirmModal({
                     title: 'Xóa phần tử?', message: 'Bạn có chắc muốn xoá phần tử này?', confirmText: 'Xóa', cancelText: 'Hủy',
                     onConfirm: () => {
+                        const beforeState = window.editorStateManager?.captureCurrentState();
                         const id = getEditableId(element);
                         element?.parentNode?.removeChild(element);
+                        const afterState = window.editorStateManager?.captureCurrentState();
                         hideSelectionHandles();
+
+                        postMsg({
+                            type: 'COMMIT_COMMAND',
+                            command: {
+                                type: 'DELETE',
+                                elementId: id,
+                                before: beforeState,
+                                after: afterState
+                            }
+                        });
                         postMsg({ type: 'DELETE_ELEMENT', id });
+
+                        if (window.editorStateManager) {
+                            window.editorStateManager.saveStateDebounced();
+                        }
                     }
                 });
             };
@@ -1833,14 +1948,17 @@
             cancelParentDragHandle.className = 'word-cancel-parent-drag-handle';
             cancelParentDragHandle.innerHTML = '✖';
             cancelParentDragHandle.title = 'Hủy kéo phần cha';
-            cancelParentDragHandle.style.display = element.classList.contains('editor-parent-drag-enabled') ? 'flex' : 'none';
+            cancelParentDragHandle.style.display = (element.classList.contains('editor-parent-drag-enabled') || allowParentDragging[getEditableId(element)]) ? 'flex' : 'none';
             cancelParentDragHandle.onclick = (e) => {
                 e.stopPropagation(); e.preventDefault();
                 const id = getEditableId(element);
                 if (id) {
                     allowParentDragging[id] = false;
                     parentDragController.disallowParentDrag(id);
-                    queryEditableAll(id).forEach(el => el.classList.remove('editor-parent-drag-enabled'));
+                    resolveParentDragElement(id).forEach(el => {
+                        el.classList.remove('editor-parent-drag-enabled');
+                        el.style.cursor = '';
+                    });
                     cancelParentDragHandle.style.display = 'none';
                     postMsg({ type: 'PARENT_DRAG_CANCELLED', id });
                 }
@@ -2216,7 +2334,16 @@
     };
 
     // ── Context menu ──────────────────────────────────────────────────────────
-    const findEditableById = (id) => id ? document.querySelector('[data-editable="' + id + '"],[data-editor-id="' + id + '"],[data-image-editable="' + id + '"],[data-edit-map="' + id + '"],[data-edit-map-href="' + id + '"]') : null;
+    const findEditableById = (id) => {
+        if (!id) return null;
+        // 1. Check if the current selected element matches this ID
+        const selected = selectionManager.getSelected();
+        if (selected && selectionManager.getElementId(selected) === id) {
+            return selected;
+        }
+        // 2. Fallback to querySelector
+        return document.querySelector('[data-editable="' + id + '"],[data-editor-id="' + id + '"],[data-image-editable="' + id + '"],[data-edit-map="' + id + '"],[data-edit-map-href="' + id + '"]');
+    };
 
     let layerPanelHoverEl = null;
     const LAYER_PANEL_HOVER_CLS = 'editor-layers-panel-hover';
@@ -2568,7 +2695,7 @@
             const newZ = 10 + (n - i) * 10;
             ensurePositionForStacking(row.el);
             // Set z-index in inline style so it persists in HTML
-            row.el.style.zIndex = String(newZ);
+            row.el.style.setProperty('z-index', String(newZ), 'important');
             // Also set as data attribute for backup
             row.el.setAttribute('data-z-index', String(newZ));
             updates.push({ id: row.id, zIndex: newZ });
@@ -2648,20 +2775,42 @@
         if (targetEl) selectionManager.select(targetEl);
     };
 
+    // Helper: tìm element để apply visual feedback cho parent drag
+    // Ưu tiên: queryEditableAll (có attribute) → findEditableById → selected element
+    const resolveParentDragElement = (elementId) => {
+        const byAttr = queryEditableAll(elementId);
+        if (byAttr.length > 0) return byAttr;
+        const byId = findEditableById(elementId);
+        if (byId) return [byId];
+        const selected = selectionManager.getSelected();
+        if (selected && (getEditableId(selected) === elementId || selected.id === elementId)) return [selected];
+        return [];
+    };
+
     const handleEnableParentDrag = (elementId) => {
         parentDragController.allowParentDrag(elementId);
         allowParentDragging[elementId] = true;
-        queryEditableAll(elementId).forEach(el => { el.style.cursor = 'move'; el.classList.add('editor-parent-drag-enabled'); });
+        const targets = resolveParentDragElement(elementId);
+        targets.forEach(el => {
+            el.style.cursor = 'move';
+            el.classList.add('editor-parent-drag-enabled');
+        });
+        // Nếu không tìm được qua id, thử apply lên selected element trực tiếp
+        if (targets.length === 0) {
+            const selected = selectionManager.getSelected();
+            if (selected) {
+                selected.style.cursor = 'move';
+                selected.classList.add('editor-parent-drag-enabled');
+            }
+        }
         try {
             window.parent.postMessage({ __html_editor: true, type: 'PARENT_DRAG_PERMISSION_GRANTED', targetId: elementId, expiresIn: 30000 }, '*');
-            // Also update context menu to show "Tắt kéo phần cha"
             window.parent.postMessage({ __html_editor: true, type: 'UPDATE_CONTEXT_MENU_PARENT_DRAG', targetId: elementId, isParentDragEnabled: true }, '*');
         } catch (error) { console.error('Error sending parent drag permission notification:', error); }
         setTimeout(() => {
             allowParentDragging[elementId] = false;
             parentDragController.disallowParentDrag(elementId);
-            queryEditableAll(elementId).forEach(el => el.classList.remove('editor-parent-drag-enabled'));
-            // Update context menu when parent drag expires
+            resolveParentDragElement(elementId).forEach(el => el.classList.remove('editor-parent-drag-enabled'));
             try {
                 window.parent.postMessage({ __html_editor: true, type: 'UPDATE_CONTEXT_MENU_PARENT_DRAG', targetId: elementId, isParentDragEnabled: false }, '*');
             } catch (error) { console.error('Error sending parent drag expiration notification:', error); }
@@ -2671,8 +2820,10 @@
     const handleDisableParentDrag = (elementId) => {
         allowParentDragging[elementId] = false;
         parentDragController.disallowParentDrag(elementId);
-        queryEditableAll(elementId).forEach(el => el.classList.remove('editor-parent-drag-enabled'));
-        // Update context menu to show "Kéo phần cha" again
+        resolveParentDragElement(elementId).forEach(el => {
+            el.classList.remove('editor-parent-drag-enabled');
+            el.style.cursor = '';
+        });
         try {
             window.parent.postMessage({ __html_editor: true, type: 'UPDATE_CONTEXT_MENU_PARENT_DRAG', targetId: elementId, isParentDragEnabled: false }, '*');
         } catch (error) { console.error('Error sending parent drag disable notification:', error); }
@@ -2723,7 +2874,21 @@
     const handleContextMenu = (e) => {
         e.preventDefault(); e.stopPropagation();
         const raw = e.target?.nodeType === 3 ? e.target.parentElement : e.target;
-        const el = resolveInteractiveEditable(raw) || raw?.closest?.(EDITABLE_SEL);
+
+        // Context menu dùng hàm resolve riêng — KHÔNG skip container (khác với drag resolve)
+        // Để user có thể right-click vào container và thấy option "Kéo phần cha"
+        const resolveContextTarget = (target) => {
+            let cur = target;
+            // Ưu tiên: tìm editable node gần nhất (kể cả container)
+            while (cur && cur !== document.body && cur !== document.documentElement) {
+                if (isEditableNode(cur)) return cur;
+                cur = cur.parentElement;
+            }
+            // Fallback: tìm closest editable selector
+            return raw?.closest?.(EDITABLE_SEL) || null;
+        };
+
+        const el = resolveContextTarget(raw);
         let targetId = null, targetTab = null, isImage = false, isLocked = false, currentZIndex = 0, isParent = false, hasUnderlyingElements = false, isParentDragEnabled = false;
         if (el) {
             const fid = el.getAttribute('data-editable') || el.getAttribute('data-editor-id');
@@ -2750,31 +2915,6 @@
             if (targetId) isParentDragEnabled = parentDragController.allowedParents.has(targetId);
             const stack = elementStackManager.getStackAtPosition(e.clientX, e.clientY);
             hasUnderlyingElements = stack.length > 1;
-
-            // ── Preserve element's inline styles during context menu ──
-            // Save ALL inline styles so they're not lost during context menu interaction
-            if (el && el.getAttribute) {
-                const currentStyle = el.getAttribute('style') || '';
-                // Store the complete style attribute
-                if (!el.dataset.editorContextMenuStyle) {
-                    el.dataset.editorContextMenuStyle = currentStyle;
-                }
-                // Restore immediately and continuously to prevent any changes
-                const restoreStyle = () => {
-                    if (el.dataset.editorContextMenuStyle && el.getAttribute('style') !== el.dataset.editorContextMenuStyle) {
-                        el.setAttribute('style', el.dataset.editorContextMenuStyle);
-                    }
-                };
-                // Restore after multiple intervals to catch all changes
-                setTimeout(restoreStyle, 10);
-                setTimeout(restoreStyle, 50);
-                setTimeout(restoreStyle, 100);
-                // Also restore when context menu closes
-                setTimeout(() => {
-                    restoreStyle();
-                    delete el.dataset.editorContextMenuStyle;
-                }, 500);
-            }
         }
         postMsg({ type: 'SHOW_HTML_CONTEXT_MENU', targetId, isImage, isLocked, currentZIndex, clientX: e.clientX, clientY: e.clientY, tab: targetTab, isParent, hasUnderlyingElements, isParentDragEnabled });
     };
@@ -2805,10 +2945,22 @@
 
     // ── Interaction handler ───────────────────────────────────────────────────
     const isHandleTarget = (t) => !!(t.closest?.('.word-selection-handles') || isIgnoredActionEl(t));
+    const isGalleryLightboxControlTarget = (target) => {
+        if (!target || typeof target.closest !== 'function') return false;
+        const lightbox = target.closest('#galleryLightbox.active, .lightbox.active');
+        if (!lightbox) return false;
+        return (
+            target === lightbox ||
+            !!target.closest(
+                '.lightbox-header, .lightbox-toolbar, .toolbar-btn, .lightbox-close, .lightbox-prev, .lightbox-next, .lightbox-content, #lightboxContent, #lightboxImg'
+            )
+        );
+    };
 
     const handleInteraction = (e) => {
         if (interactionMode === 'hand') return;
         const raw = e.target?.nodeType === 3 ? e.target.parentElement : e.target;
+        if (isGalleryLightboxControlTarget(raw)) return;
         const el = resolveDragTarget(raw, e.clientX, e.clientY) || raw?.closest?.('*');
         if (!el) { postMsg({ type: 'FOCUS_FIELD', id: null }); return; }
 
@@ -2928,6 +3080,23 @@
 
             postMsg({ type: 'HTML_TEXT_CHANGE', id: fieldId, value: el.innerText || '', formattedValue: el.innerHTML || '' });
             postMsg({ type: 'TEXT_CONTENT_CHANGED', id: fieldId, value: el.innerText || '', html: el.innerHTML || '' });
+
+            // ── COMMAND COMMIT ──
+            if (el.__beforeState) {
+                const afterState = window.editorStateManager?.captureElementState(el);
+                if (afterState && afterState.content !== el.__beforeState.content) {
+                    postMsg({
+                        type: 'COMMIT_COMMAND',
+                        command: {
+                            type: 'TEXT_CHANGE',
+                            elementId: fieldId,
+                            before: el.__beforeState,
+                            after: afterState
+                        }
+                    });
+                }
+                delete el.__beforeState;
+            }
         }
     };
 
@@ -2935,8 +3104,9 @@
     const handleDragPointerDown = (e) => {
         if (e.isPrimary === false) return;
         if (e.pointerType === 'mouse' && e.button !== 0) return;
+        if (isGalleryLightboxControlTarget(e.target)) return;
 
-        console.log('[Drag] handleDragPointerDown triggered', e.target);
+        // console.log('[Drag] handleDragPointerDown triggered', e.target);
 
         if (isHandleTarget(e.target)) {
             console.log('[Drag] Blocked: is handle target');
@@ -2951,7 +3121,7 @@
         }
 
         const stackElement = elementStackManager.cycleNext(e.clientX, e.clientY);
-        const el = stackElement || resolveDragTarget(e.target, e.clientX, e.clientY);
+        let el = stackElement || resolveDragTarget(e.target, e.clientX, e.clientY);
 
         if (!el) {
             console.log('[Drag] No element found');
@@ -2962,6 +3132,29 @@
         }
 
         console.log('[Drag] Element found:', el);
+
+        // If parent drag is enabled on a parent, redirect to parent
+        const parentDragEnabled = el.closest('.editor-parent-drag-enabled');
+        if (parentDragEnabled && parentDragEnabled !== el) {
+            console.log('[Drag] Redirecting to parent with drag enabled:', parentDragEnabled);
+            el = parentDragEnabled;
+        }
+
+        // ✅ FIX: "Drag phải move container crop"
+        // Nếu mục tiêu là IMG nằm trong một DIV wrapper, di chuyển DIV đó để giữ nguyên mask/frame
+        if (el.tagName === 'IMG' && el.parentElement && el.parentElement.tagName === 'DIV') {
+            const parent = el.parentElement;
+            const pc = window.getComputedStyle(parent);
+            // Nếu parent có overflow hidden hoặc border radius, nó chính là Frame/Mask
+            const isFrame = pc.overflow === 'hidden' || pc.borderRadius !== '0px' || pc.clipPath !== 'none';
+
+            if (isFrame) {
+                console.log('[Drag] Unified block drag: moving parent DIV instead of inner IMG');
+                el = parent;
+                el.style.overflow = 'hidden'; // Cưỡng bức clipping
+                if (pc.position === 'static') el.style.position = 'relative';
+            }
+        }
 
         if (e.detail === 2) {
             console.log('[Drag] Blocked: double-click detected');
@@ -2997,8 +3190,11 @@
         const widthPercent = (rect.width / vw) * 100;
         const heightPercent = (rect.height / vh) * 100;
 
+        // For images, use stricter threshold (background-like images)
+        const isImage = el.dataset.imageEditable || el.tagName === 'IMG';
+        const threshold = isImage ? 50 : 80;
 
-        const isTooLarge = widthPercent > 80 && heightPercent > 80;
+        const isTooLarge = widthPercent > threshold && heightPercent > threshold;
 
         if (isTooLarge) {
             console.log('[Drag Block] Element too large to drag:', {
@@ -3006,7 +3202,8 @@
                 height: rect.height,
                 widthPercent: widthPercent.toFixed(1) + '%',
                 heightPercent: heightPercent.toFixed(1) + '%',
-                threshold: 'both dimensions > 80%'
+                threshold: `both dimensions > ${threshold}%`,
+                isImage
             });
             e.preventDefault();
             selectionManager.select(el);
@@ -3024,10 +3221,27 @@
         console.log('[Drag] All checks passed - starting drag');
         selectionManager.select(el);
 
+        // Handle section elevation on drag start
+        const section = el.closest('.section');
+        if (section) {
+            section.dataset.originalZIndex = section.style.zIndex || '';
+            section.dataset.originalOverflow = section.style.overflow || '';
+            section.style.setProperty('z-index', '2147483647', 'important');
+            section.style.setProperty('overflow', 'visible', 'important');
+        }
+
         const inlineTags = ['SPAN', 'EM', 'STRONG', 'B', 'I', 'SMALL', 'A'];
         if (inlineTags.includes(el.tagName) && window.getComputedStyle(el).display === 'inline') el.style.display = 'inline-block';
 
-        const eid = el.dataset.editable || el.dataset.editorId || el.dataset.imageEditable || el.dataset.editMap || el.dataset.editMapHref;
+        // ✅ Đảm bảo lấy ID từ chính nó hoặc con trực tiếp (trường hợp ta vừa chuyển el lên parent)
+        let eid = el.dataset.editable || el.dataset.editorId || el.dataset.imageEditable || el.dataset.editMap || el.dataset.editMapHref;
+        if (!eid && el.tagName === 'DIV') {
+            const childWithId = el.querySelector('[data-editable],[data-image-editable],[data-editor-id]');
+            if (childWithId) {
+                eid = getEditableId(childWithId);
+            }
+        }
+
         const savedT = getSavedTransform(eid);
         if (savedT && (!el.dataset?.editorTx || !el.dataset?.editorTy)) {
             const fn = parseTransformFunctions(savedT).find(f => f.name === 'translate');
@@ -3044,14 +3258,19 @@
         const absTop = rect.top + window.scrollY, absLeft = rect.left + window.scrollX;
         const boostedZ = String(Math.max(getHighestZIndex(0) + 1, 999999));
 
+        // Check if element has actions (allow dragging outside viewport)
+        const hasActions = el.getAttribute('data-action-id') || el.onclick || el.getAttribute('onclick') || el.getAttribute('action');
+
         cancelEdgeScrollRaf();
         dragState = {
             el, id: eid, pointerId: e.pointerId, identitySnapshot: snapshotElementIdentity(el),
             startX: e.clientX, startY: e.clientY,
             clickOffsetX: e.clientX - rect.left, clickOffsetY: e.clientY - rect.top,
             tx: toNum(state.tx), ty: toNum(state.ty),
-            minTx: -absLeft + state.tx, maxTx: vw - (rect.right + window.scrollX) + state.tx,
-            minTy: -absTop + state.ty, maxTy: dh - (rect.bottom + window.scrollY) + state.ty,
+            minTx: hasActions ? -Infinity : -absLeft + state.tx,
+            maxTx: hasActions ? Infinity : vw - (rect.right + window.scrollX) + state.tx,
+            minTy: hasActions ? -Infinity : -absTop + state.ty,
+            maxTy: hasActions ? Infinity : dh - (rect.bottom + window.scrollY) + state.ty,
             initialTransforms: state.others.slice(),
             scrollStartX: window.scrollX, scrollStartY: window.scrollY,
             originalZIndex: el.style.zIndex, originalPosition: el.style.position, boostedZIndex: boostedZ,
@@ -3077,19 +3296,39 @@
         postMsg({ type: 'IFRAME_MOUSE_DOWN', clientX: e.clientX, clientY: e.clientY });
     };
 
+    let dragRafId = null; // RAF id cho drag throttle
+
     const handleDragPointerMove = (e) => {
         if (!dragState || (e.pointerId != null && e.pointerId !== dragState.pointerId)) return;
         if (e.pointerType !== 'mouse') e.preventDefault();
+        if (!dragState.hasStartedMoving) {
+            const dx = Math.abs(e.clientX - dragState.startX);
+            const dy = Math.abs(e.clientY - dragState.startY);
+            if (dx > 3 || dy > 3) {
+                dragState.hasStartedMoving = true;
+                // Capture initial state for command history
+                dragState.beforeState = window.editorStateManager?.captureElementState(dragState.el);
+            }
+        }
+        // Luôn cập nhật toạ độ mới nhất (không bỏ qua)
         dragState.lastPointerClientX = e.clientX;
         dragState.lastPointerClientY = e.clientY;
         dragState.lastPointerTypeForEdge = e.pointerType;
-        syncDragPositionFromPointerClient();
-        scheduleEdgeScrollApply();
+        // Throttle DOM update bằng RAF — chỉ apply 1 lần mỗi frame
+        if (dragRafId == null) {
+            dragRafId = requestAnimationFrame(() => {
+                dragRafId = null;
+                syncDragPositionFromPointerClient();
+                scheduleEdgeScrollApply();
+            });
+        }
     };
 
     const handleDragPointerUp = (e) => {
         if (!dragState) return;
         if (e && e.pointerId != null && e.pointerId !== dragState.pointerId) return;
+        // Cancel pending RAF để tránh update sau khi đã thả
+        if (dragRafId != null) { cancelAnimationFrame(dragRafId); dragRafId = null; }
         cancelEdgeScrollRaf();
         if (dragState.el && dragState.pointerId != null) try { dragState.el.releasePointerCapture(dragState.pointerId); } catch (err) { }
         const finalT = dragState.el.style.transform || '';
@@ -3100,11 +3339,38 @@
             : parseInt(dragState.boostedZIndex, 10) || 999999;
         postMsg({ type: 'HTML_DRAG_CHANGE', id: dragState.id, tx: toNum(dragState.el.dataset.editorTx), ty: toNum(dragState.el.dataset.editorTy), rotation, transform: dragState.el.style.transform || finalT, zIndex: finalZIndex });
         if (dragState.id) saveElementTransform(dragState.id, dragState.el.style.transform || finalT);
+
+        // ── COMMAND COMMIT ──
+        if (dragState.hasStartedMoving && dragState.beforeState) {
+            const afterState = window.editorStateManager?.captureElementState(dragState.el);
+            postMsg({
+                type: 'COMMIT_COMMAND',
+                command: {
+                    type: 'MOVE',
+                    elementId: dragState.id,
+                    before: dragState.beforeState,
+                    after: afterState
+                }
+            });
+        }
+
         if (dragState.el) {
             dragState.el.style.zIndex = String(finalZIndex);
             if (dragState.originalPosition !== undefined) dragState.el.style.position = dragState.originalPosition;
         }
         const endedEl = dragState.el;
+
+        // Restore section state on drag end
+        if (endedEl) {
+            const section = endedEl.closest('.section');
+            if (section && typeof section.dataset.originalZIndex !== 'undefined') {
+                section.style.zIndex = section.dataset.originalZIndex;
+                section.style.overflow = section.dataset.originalOverflow;
+                delete section.dataset.originalZIndex;
+                delete section.dataset.originalOverflow;
+            }
+        }
+
         // Don't disable parent drag here - let it continue until timeout or user cancels
         dragState = null;
         if (endedEl && currentSelectedImage === endedEl && selectionHandles) updateHandlesRect(endedEl);
@@ -3116,6 +3382,7 @@
 
     const handleActionCapture = (e) => {
         if (!e?.target || isEditorOverlayTarget(e.target)) return;
+        if (isGalleryLightboxControlTarget(e.target)) return;
         const m = findActionMatch(e.target, e.type);
         if (!m?.action) return;
         e.preventDefault(); e.stopPropagation();
@@ -3131,6 +3398,12 @@
     document.body.addEventListener('click', handleInteraction);
     document.body.addEventListener('dblclick', handleInteraction);
     document.body.addEventListener('focusout', handleInteraction);
+    document.addEventListener('focusin', (e) => {
+        const el = e.target;
+        if (el && el.isContentEditable) {
+            el.__beforeState = window.editorStateManager?.captureElementState(el);
+        }
+    });
     document.body.addEventListener('pointerdown', handleDragPointerDown);
     document.addEventListener('click', handleActionCapture, true);
     document.addEventListener('change', handleActionCapture, true);
@@ -3328,7 +3601,7 @@
                 ensurePositionForStacking(dom);
                 const newZIndex = parseInt(data.zIndex, 10) || 0;
                 // Set z-index in inline style so it persists in HTML
-                dom.style.zIndex = String(newZIndex);
+                dom.style.setProperty('z-index', String(newZIndex), 'important');
                 // Also set as data attribute for backup
                 dom.setAttribute('data-z-index', String(newZIndex));
                 console.log('[Set Layer] Applied z-index', newZIndex, 'to element:', ctxId, '(element:', dom, ')');
@@ -3535,6 +3808,7 @@
         if (data.type === 'ADD_EDITABLE_FIELD' && data.id) {
             const span = document.createElement('span');
             span.setAttribute('data-editable', data.id);
+            span.setAttribute('data-editor-id', data.id); // Also set editor-id for better tracking
             span.textContent = data.value || '';
             span.style.cssText = 'cursor:text;outline:1px dashed transparent;transition:outline 0.2s,background 0.2s;display:inline-block;padding:4px 8px;border-radius:4px;';
             const ctx = findBestInsertionContext({ width: 180, height: 42 });
@@ -3542,6 +3816,7 @@
             const ts = resolveInheritedTextStyles(anchor);
             const iz = resolveInheritedZIndex(anchor);
             const highZ = String(Math.max(getHighestZIndex(0) + 1, parseInt(iz || '0', 10) || 0, 999999));
+            span.setAttribute('data-z-index', highZ); // Crucial for preview extraction
             const fs = data.style?.fontSize || '18px', lh = data.style?.lineHeight || '1.2';
             const tsKeys = ['fontFamily', 'fontWeight', 'fontStyle', 'color', 'textAlign', 'textDecoration', 'letterSpacing', 'wordSpacing', 'textTransform', 'fontVariant', 'whiteSpace', 'wordBreak', 'overflowWrap'];
             tsKeys.forEach(k => { if (ts[k]) span.style[k] = ts[k]; });
@@ -3557,8 +3832,12 @@
             const hasCp = data.centerPosition && typeof data.centerPosition.left === 'number';
             let parent = ctx?.parent || document.body, before = null;
             if (hasCp) {
-                span.style.position = 'absolute'; span.style.left = Math.max(0, data.centerPosition.left) + 'px';
-                span.style.top = Math.max(0, data.centerPosition.top) + 'px'; span.style.zIndex = highZ;
+                parent = document.body; // Force body for viewport-absolute placement
+                before = null;
+                span.style.position = 'absolute';
+                span.style.left = Math.max(0, data.centerPosition.left) + 'px';
+                span.style.top = Math.max(0, data.centerPosition.top) + 'px';
+                span.style.zIndex = highZ;
             } else if (ctx?.target) {
                 const target = ctx.target;
                 const isText = ['P', 'SPAN', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'A'].includes(target.tagName);
@@ -3636,6 +3915,14 @@
 
         if (data.type === 'SET_HTML_IMAGE_STYLE' && data.id) {
             queryEditableAll(data.id).forEach(el => {
+                // ✅ FIX: Đảm bảo Container luôn có các thuộc tính bắt buộc để clip nội dung
+                if (el.tagName !== 'IMG') {
+                    el.style.overflow = 'hidden';
+                    if (window.getComputedStyle(el).position === 'static') {
+                        el.style.position = 'relative';
+                    }
+                }
+
                 const s = data.style;
                 if (s.borderRadius !== undefined) el.style.borderRadius = s.borderRadius;
                 if (s.filter !== undefined) el.style.filter = s.filter;
@@ -3651,15 +3938,53 @@
                         const cx = (x + w / 2) * 100, cy = (y + h / 2) * 100;
                         const sc2 = Math.max(1 / w, 1 / h);
                         const shapeStr = shape && String(shape) !== '0' ? String(shape) : null;
-                        const clip = 'inset(' + t2.toFixed(2) + '% ' + r2.toFixed(2) + '% ' + b2.toFixed(2) + '% ' + l2.toFixed(2) + '%' + (shapeStr ? ' round ' + shapeStr : '') + ')';
+                        const isMask = shapeStr && shapeStr.startsWith('/');
+                        const clip = 'inset(' + t2.toFixed(2) + '% ' + r2.toFixed(2) + '% ' + b2.toFixed(2) + '% ' + l2.toFixed(2) + '%' + (shapeStr && !isMask ? ' round ' + shapeStr : '') + ')';
                         const target2 = el.tagName !== 'IMG' ? el.querySelector('img') : null;
                         const img2 = el.tagName === 'IMG' ? el : target2;
-                        if (img2) { Object.assign(img2.style, { clipPath: clip, objectFit: 'cover', objectPosition: cx.toFixed(2) + '% ' + cy.toFixed(2) + '%', transformOrigin: 'center center', scale: String(+sc2.toFixed(4)) }); }
-                        else { Object.assign(el.style, { clipPath: clip, backgroundPosition: cx.toFixed(2) + '% ' + cy.toFixed(2) + '%', backgroundSize: (sc2 * 100).toFixed(2) + '%' }); }
+                        if (img2) {
+                            const imgStyles = { objectFit: 'cover', objectPosition: cx.toFixed(2) + '% ' + cy.toFixed(2) + '%', transformOrigin: 'center center', scale: String(+sc2.toFixed(4)) };
+                            if (isMask) {
+                                Object.assign(imgStyles, {
+                                    maskImage: `url("${shapeStr}")`,
+                                    maskSize: '100% 100%',
+                                    maskRepeat: 'no-repeat',
+                                    WebkitMaskImage: `url("${shapeStr}")`,
+                                    WebkitMaskSize: '100% 100%',
+                                    WebkitMaskRepeat: 'no-repeat',
+                                    clipPath: clip
+                                });
+                            } else {
+                                imgStyles.clipPath = clip;
+                            }
+                            Object.assign(img2.style, imgStyles);
+                        } else {
+                            const elStyles = { backgroundPosition: cx.toFixed(2) + '% ' + cy.toFixed(2) + '%', backgroundSize: (sc2 * 100).toFixed(2) + '%' };
+                            if (isMask) {
+                                Object.assign(elStyles, {
+                                    maskImage: `url("${shapeStr}")`,
+                                    maskSize: '100% 100%',
+                                    maskRepeat: 'no-repeat',
+                                    WebkitMaskImage: `url("${shapeStr}")`,
+                                    WebkitMaskSize: '100% 100%',
+                                    WebkitMaskRepeat: 'no-repeat',
+                                    clipPath: clip
+                                });
+                            } else {
+                                elStyles.clipPath = clip;
+                            }
+                            Object.assign(el.style, elStyles);
+                        }
                     } else {
                         el.style.clipPath = '';
+                        el.style.maskImage = '';
+                        el.style.WebkitMaskImage = '';
+                        el.style.maskSize = '';
+                        el.style.WebkitMaskSize = '';
+                        el.style.maskRepeat = '';
+                        el.style.WebkitMaskRepeat = '';
                         const t2 = el.tagName !== 'IMG' ? (el.querySelector('img') || el) : el;
-                        Object.assign(t2.style, { clipPath: '', objectFit: '', objectPosition: '', scale: '' });
+                        Object.assign(t2.style, { clipPath: '', objectFit: '', objectPosition: '', scale: '', maskImage: '', WebkitMaskImage: '', maskSize: '', WebkitMaskSize: '', maskRepeat: '', WebkitMaskRepeat: '' });
                         el.style.backgroundPosition = el.style.backgroundSize = '';
                     }
                 }
@@ -3738,12 +4063,24 @@
             let css = '';
             if (bs.backgroundImage && bs.backgroundImage !== 'none') {
                 css = 'html,body{background-image:' + bs.backgroundImage + '!important;background-size:' + (bs.backgroundSize || 'cover') + '!important;background-position:' + (bs.backgroundPosition || 'center') + '!important;background-color:' + (bs.backgroundColor || 'transparent') + '!important;background-attachment:' + (bs.backgroundAttachment || 'fixed') + '!important;background-repeat:' + (bs.backgroundRepeat || 'no-repeat') + '!important;}';
+                if (document.querySelector('.scroll-container')) {
+                    css += '.scroll-container{background-image:' + bs.backgroundImage + '!important;background-size:' + (bs.backgroundSize || 'cover') + '!important;background-position:' + (bs.backgroundPosition || 'center') + '!important;background-color:' + (bs.backgroundColor || 'transparent') + '!important;background-attachment:' + (bs.backgroundAttachment || 'fixed') + '!important;background-repeat:' + (bs.backgroundRepeat || 'no-repeat') + '!important;}';
+                }
             } else if (bs.background && bs.background !== 'none' && !bs.background.includes('url')) {
                 css = 'html,body{background:' + bs.background + '!important;background-color:transparent!important;background-attachment:scroll!important;}';
-            } else if (bs.backgroundColor && bs.backgroundColor !== 'transparent') {
+                if (document.querySelector('.scroll-container')) {
+                    css += '.scroll-container{background:' + bs.background + '!important;background-attachment:scroll!important;}';
+                }
+            } else if (bs.backgroundColor) {
                 css = 'html,body{background-color:' + bs.backgroundColor + '!important;background-image:none!important;background:' + bs.backgroundColor + '!important;}';
+                if (document.querySelector('.scroll-container')) {
+                    css += '.scroll-container{background-color:' + bs.backgroundColor + '!important;background-image:none!important;background:' + bs.backgroundColor + '!important;}';
+                }
             } else {
                 css = 'html,body{background:transparent!important;background-image:none!important;background-color:transparent!important;}';
+                if (document.querySelector('.scroll-container')) {
+                    css += '.scroll-container{background:transparent!important;background-image:none!important;background-color:transparent!important;}';
+                }
             }
             s2.textContent = css; document.head.appendChild(s2);
         }
@@ -3888,7 +4225,28 @@
         }
 
         if (data.type === 'EDITOR_MUSIC_SYNC') {
-            const { isPlaying = false, src = null } = data;
+            const { isPlaying = false, src = null, hasMusic = false } = data;
+            // Update toggle button visibility
+            const musicToggle = document.getElementById('musicToggle') || document.querySelector('.music-fab') || document.querySelector('.music-btn');
+            if (musicToggle) {
+                if (!hasMusic || !src) {
+                    musicToggle.style.display = 'none';
+                    musicToggle.classList.remove('is-playing');
+                    musicToggle.setAttribute('aria-label', 'Bật nhạc nền');
+                    musicToggle.title = 'Bật nhạc nền';
+                } else {
+                    musicToggle.style.display = '';
+                    if (isPlaying) {
+                        musicToggle.classList.add('is-playing');
+                        musicToggle.setAttribute('aria-label', 'Tắt nhạc nền');
+                        musicToggle.title = 'Tắt nhạc nền';
+                    } else {
+                        musicToggle.classList.remove('is-playing');
+                        musicToggle.setAttribute('aria-label', 'Bật nhạc nền');
+                        musicToggle.title = 'Bật nhạc nền';
+                    }
+                }
+            }
             let audioElement = document.getElementById('bgMusic') || document.getElementById('background-music');
             if (!audioElement) { audioElement = document.createElement('audio'); audioElement.id = 'bgMusic'; audioElement.style.display = 'none'; document.body.appendChild(audioElement); }
             try {
@@ -4037,4 +4395,42 @@
     };
     setTimeout(tryApply, 100);
     setTimeout(() => emitActionsSnapshot(true), 200);
+    window.addEventListener('message', (event) => {
+        const data = event.data;
+        if (!data || data.__html_editor !== true) return;
+
+        if (data.type === 'APPLY_COMMAND') {
+            const cmd = data.command;
+            if (!cmd) return;
+
+            const stateToApply = data.direction === 'undo' ? cmd.before : cmd.after;
+            if (stateToApply && window.editorStateManager) {
+                if (cmd.elementId) {
+                    const el = findEditableById(cmd.elementId);
+                    if (el) {
+                        window.editorStateManager.applyElementState(el, stateToApply);
+
+                        // Update handles if the applied element is selected
+                        if (currentSelectedImage === el) {
+                            updateHandlesRect(el);
+                            showSelectionHandles(el);
+                        }
+                    }
+                } else if (cmd.type === 'CANVAS_SNAPSHOT' || cmd.type === 'DELETE' || cmd.type === 'DUPLICATE') {
+                    // Full structural restore from snapshot
+                    window.editorStateManager.applyState(stateToApply);
+
+                    // Clear selection handles after full restore
+                    hideSelectionHandles();
+                }
+
+                // Signal back to parent that application is complete
+                postMsg({
+                    type: 'APPLY_COMPLETE',
+                    commandId: cmd.id || cmd.elementId || 'structural',
+                    direction: data.direction
+                });
+            }
+        }
+    });
 })();

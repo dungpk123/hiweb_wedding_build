@@ -18,7 +18,10 @@
     snowflakes: "snowflakes-effect.js",
     "snow-icon": "snow-icon-effect.js",
     petals2: "petals2-effect.js",
+    sakura: "sakura-effect.js",
     hearts: "hearts-effect.js",
+    "canvas-hearts": "canvas-hearts-effect.js",
+    leaves: "leaves-effect.js",
     custom: "custom-icon-effect.js",
   };
 
@@ -26,7 +29,10 @@
     snowflakes: { count: 16, speed: 9, sway: 3, spawnInterval: 850 },
     "snow-icon": { count: 12, speed: 8, sway: 4, spawnInterval: 900 },
     petals2: { count: 80, speed: 9, sway: 3, spawnInterval: 850 },
+    sakura: { count: 46, speed: 8, sway: 9, spawnInterval: 0 },
     hearts: { count: 10, speed: 8, bounce: 0.6, spawnInterval: 950 },
+    "canvas-hearts": { count: 40, speed: 1, spawnInterval: 1000 },
+    leaves: { count: 60, speed: 1, spawnInterval: 1000 },
     custom: { count: 10, speed: 9, defaultIcon: "*", spawnInterval: 1200 },
   };
 
