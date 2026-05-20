@@ -193,6 +193,162 @@
     };
     disableMediaAutoplayOnLoad();
 
+    const CLICK_MUSIC_ICON_ID = '1005';
+    const CLICK_MUSIC_STYLE = `
+      @keyframes hiweb-click-music-spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+      }
+
+      #musicToggle.hiweb-click-music-button,
+      #music-toggle.hiweb-click-music-button,
+      .music-btn.hiweb-click-music-button {
+        position: fixed !important;
+        right: 24px !important;
+        bottom: 24px !important;
+        left: auto !important;
+        top: auto !important;
+        z-index: 99999 !important;
+        width: auto !important;
+        min-width: 148px !important;
+        height: 40px !important;
+        min-height: 40px !important;
+        padding: 0 0 0 14px !important;
+        border-radius: 999px !important;
+        background: #101854 !important;
+        border: 0 !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: flex-end !important;
+        gap: 6px !important;
+        overflow: visible !important;
+        cursor: pointer !important;
+        box-shadow: 0 10px 26px rgba(16, 24, 84, 0.22) !important;
+        transform: none !important;
+      }
+
+      .hiweb-click-music-button .hiweb-click-music-label {
+        color: #ffffff !important;
+        font-family: Georgia, "Times New Roman", serif !important;
+        font-size: 16px !important;
+        font-weight: 600 !important;
+        line-height: 1 !important;
+        letter-spacing: 0 !important;
+        white-space: nowrap !important;
+        pointer-events: none !important;
+      }
+
+      .hiweb-click-music-button .music-icon {
+        width: 44px !important;
+        height: 44px !important;
+        min-width: 44px !important;
+        min-height: 44px !important;
+        border-radius: 50% !important;
+        object-fit: contain !important;
+        flex: 0 0 44px !important;
+        margin: 0 -5px 0 0 !important;
+        display: block !important;
+        transform-origin: 50% 50% !important;
+      }
+
+      .hiweb-click-music-button .music-icon img {
+        width: 100% !important;
+        height: 100% !important;
+        object-fit: contain !important;
+        border-radius: 50% !important;
+        display: block !important;
+      }
+
+      .hiweb-click-music-button.playing .music-icon,
+      .hiweb-click-music-button.is-playing .music-icon,
+      .hiweb-click-music-button .music-icon.is-playing {
+        animation: hiweb-click-music-spin 3s linear infinite !important;
+      }
+
+      @media (max-width: 520px) {
+        #musicToggle.hiweb-click-music-button,
+        #music-toggle.hiweb-click-music-button,
+        .music-btn.hiweb-click-music-button {
+          right: 14px !important;
+          bottom: 14px !important;
+          min-width: 132px !important;
+          height: 36px !important;
+          min-height: 36px !important;
+          padding-left: 12px !important;
+          gap: 5px !important;
+        }
+
+        .hiweb-click-music-button .hiweb-click-music-label {
+          font-size: 14px !important;
+        }
+
+        .hiweb-click-music-button .music-icon {
+          width: 40px !important;
+          height: 40px !important;
+          min-width: 40px !important;
+          min-height: 40px !important;
+          flex-basis: 40px !important;
+        }
+      }
+    `;
+
+    function applyCustomMusicIcon(iconUrl, iconId) {
+        if (!iconUrl) return;
+
+        let musicIcon = document.querySelector('.music-icon');
+        let button = musicIcon?.closest('button') || document.getElementById('musicToggle') || document.getElementById('music-toggle') || musicIcon?.closest('.music-btn');
+
+        if (!musicIcon && iconId === CLICK_MUSIC_ICON_ID) {
+            button = button || document.createElement('button');
+            button.id = button.id || 'music-toggle';
+            button.type = 'button';
+            button.setAttribute('aria-label', 'Bật nhạc nền');
+            musicIcon = document.createElement('img');
+            musicIcon.className = 'music-icon';
+            button.appendChild(musicIcon);
+            if (!button.parentElement) document.body.appendChild(button);
+        }
+
+        if (!musicIcon) return;
+
+        const isImgEl = musicIcon.tagName.toLowerCase() === 'img';
+        if (!musicIcon.hasAttribute('data-default-icon')) {
+            const original = isImgEl ? (musicIcon.getAttribute('src') || '') : (musicIcon.textContent || '♪');
+            musicIcon.setAttribute('data-default-icon', original);
+        }
+
+        if (button) {
+            button.classList.remove('hiweb-click-music-button');
+            button.querySelector('.hiweb-click-music-label')?.remove();
+        }
+        if (iconId !== CLICK_MUSIC_ICON_ID) {
+            document.getElementById('hiweb-click-music-style')?.remove();
+            if (button && !button.classList.contains('music-toggle') && (button.id === 'music-toggle' || button.id === 'musicToggle')) {
+                button.classList.add('music-toggle');
+            }
+        }
+
+        if (isImgEl) musicIcon.setAttribute('src', iconUrl);
+        else musicIcon.innerHTML = '<img src="' + iconUrl + '" style="width:100%;height:100%;object-fit:contain;" alt="" />';
+
+        if (iconId) musicIcon.setAttribute('data-icon-id', iconId);
+        if (iconId !== CLICK_MUSIC_ICON_ID || !button) return;
+
+        document.getElementById('hiweb-click-music-style')?.remove();
+        const style = document.createElement('style');
+        style.id = 'hiweb-click-music-style';
+        style.textContent = CLICK_MUSIC_STYLE;
+        document.head.appendChild(style);
+
+        button.classList.add('hiweb-click-music-button');
+        if (!button.querySelector('.hiweb-click-music-label')) {
+            const label = document.createElement('span');
+            label.className = 'hiweb-click-music-label';
+            label.textContent = 'CLICK MUSIC';
+            button.insertBefore(label, musicIcon);
+        }
+    }
+
     // ── State ─────────────────────────────────────────────────────────────────
     let dragState = null;
     let interactionMode = 'pointer';
@@ -4297,9 +4453,9 @@
 
                 // Update music icon if exists
                 if (iconUrl) {
+                    applyCustomMusicIcon(iconUrl, iconId);
                     const musicIcon = document.querySelector('.music-icon');
                     if (musicIcon) {
-                        musicIcon.src = iconUrl;
                         if (iconId) musicIcon.setAttribute('data-icon-id', iconId);
                         if (iconColor) musicIcon.setAttribute('data-icon-color', iconColor);
                     }
