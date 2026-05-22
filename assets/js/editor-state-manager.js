@@ -7,644 +7,591 @@
 (function () {
     'use strict';
 
-    // ── State Storage Structure ───────────────────────────────────────────────
-    // {
-    //   css: {
-    //     "element-id": { transform: "...", width: "...", fontSize: "...", ... }
-    //   },
-    //   content: {
-    //     "element-id": "text content or image URL"
-    //   },
-    //   metadata: {
-    //     background: { ... },
-    //     music: { ... }
-    //   }
-    // }
+    // ── Constants ─────────────────────────────────────────────────────────────
+
+    const EDITABLE_SELECTOR =
+        '[data-editable], [data-editor-id], [data-image-editable], ' +
+        '[data-edit-map], [data-edit-map-href], img[data-image-editable], [data-editor-detached]';
+
+    const EDITABLE_ID_ATTRS = [
+        'data-editable', 'data-editor-id', 'data-image-editable',
+        'data-edit-map', 'data-edit-map-href', 'data-history',
+    ];
+
+    /** CSS style properties to capture — ordered by importance */
+    const CAPTURED_STYLE_PROPS = [
+        'cssText',
+        'transform', 'transformOrigin',
+        'width', 'height',
+        'position', 'left', 'top', 'zIndex',
+        'fontSize', 'fontFamily', 'fontWeight', 'fontStyle',
+        'color', 'textAlign', 'lineHeight', 'letterSpacing',
+        'textDecoration', 'textTransform',
+        'opacity', 'filter', 'borderRadius', 'boxShadow',
+        'backgroundColor', 'backgroundImage', 'backgroundSize',
+        'backgroundPosition', 'backgroundRepeat',
+        'clipPath', 'objectFit', 'objectPosition',
+        'maskImage', 'maskSize', 'maskPosition', 'maskRepeat',
+        'WebkitMaskImage', 'WebkitMaskSize', 'WebkitMaskPosition', 'WebkitMaskRepeat',
+        'display', 'overflow', 'whiteSpace', 'animation',
+    ];
+
+    /** Temporary class names added by the editor — excluded from snapshots */
+    const TEMP_CLASSES = new Set(['selected', 'editing', 'editor-effect-target']);
+
+    const MAX_STACK_SIZE = 50;
+    const DEBOUNCE_DELAY = 300;
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /**
+     * Build a CSS selector that targets an element by its editable ID.
+     * Returns null when id is empty so callers can guard cheaply.
+     */
+    function buildSelector(id) {
+        if (!id) return null;
+        return EDITABLE_ID_ATTRS.slice(0, 5)   // skip data-history for querying
+            .map(attr => `[${attr}="${CSS.escape(id)}"]`)
+            .join(', ');
+    }
+
+    /** Return all DOM elements matching the given editable id. */
+    function queryById(id) {
+        const sel = buildSelector(id);
+        return sel ? Array.from(document.querySelectorAll(sel)) : [];
+    }
+
+    /** Fast, non-cryptographic hash for change detection — avoids full JSON.stringify compare. */
+    function quickHash(obj) {
+        const str = JSON.stringify(obj);
+        let h = 0x811c9dc5;
+        for (let i = 0; i < str.length; i++) {
+            h ^= str.charCodeAt(i);
+            h = (h * 0x01000193) >>> 0;
+        }
+        return h;
+    }
+
+    /** Simple debounce — returns { call, cancel }. */
+    function debounce(fn, delay) {
+        let timer = null;
+        return {
+            call(...args) {
+                clearTimeout(timer);
+                timer = setTimeout(() => { timer = null; fn(...args); }, delay);
+            },
+            cancel() { clearTimeout(timer); timer = null; },
+        };
+    }
+
+    // ── EditorStateManager ────────────────────────────────────────────────────
 
     class EditorStateManager {
         constructor() {
             this.undoStack = [];
             this.redoStack = [];
-            this.maxStackSize = 50;
-            this.debounceTimer = null;
-            this.debounceDelay = 300; // ms
+            // this.maxStackSize = 50;
+            // this.debounceTimer = null;
+            // this.debounceDelay = 300; // ms
+
+            this._lastHash = null;
+
+            const deb = debounce(() => this.saveState(), DEBOUNCE_DELAY);
+            this._debouncedSave = deb.call.bind(deb);
+            this._cancelDebounce = deb.cancel.bind(deb);
         }
 
-        // ── Get current state from DOM ────────────────────────────────────────
+        // ── State Capture ─────────────────────────────────────────────────────
+
         captureCurrentState() {
             const state = {
                 css: {},
                 content: {},
-                structure: {}, // Lưu cấu trúc các phần tử được tạo động (như clone/copy)
+                structure: {},
                 metadata: {
-                    background: this.captureBackgroundState(),
-                    timestamp: Date.now()
-                }
+                    background: this._captureBackground(),
+                    timestamp: Date.now(),
+                },
             };
 
-            // Capture all editable elements
-            const editableSelector = '[data-editable], [data-editor-id], [data-image-editable], [data-edit-map], [data-edit-map-href], img[data-image-editable], [data-editor-detached]';
-            document.querySelectorAll(editableSelector).forEach(el => {
-                const id = this.getElementId(el);
+            document.querySelectorAll(EDITABLE_SELECTOR).forEach(el => {
+                const id = this._getElementId(el);
                 if (!id) return;
 
-                // Lưu thông tin thẻ và thuộc tính cho các phần tử do Editor tạo ra (bắt đầu bằng editor-)
-                if (id.startsWith('editor-')) {
-                    const parent = el.parentElement || document.body;
-                    state.structure[id] = {
-                        tagName: el.tagName,
-                        attributes: this.captureElementAttributes(el),
-                        parentId: this.getElementId(parent),
-                        parentPath: this.getNodePathFromBody(parent),
-                        childIndex: parent ? Array.from(parent.children || []).indexOf(el) : -1,
-                    };
-                }
+                const parent = el.parentElement || document.body;
+                state.structure[id] = {
+                    tagName: el.tagName,
+                    attributes: this._captureAttributes(el),
+                    parentId: this._getElementId(parent),
+                    parentPath: this._pathFromBody(parent),
+                    childIndex: Array.from(parent.children).indexOf(el),
+                };
 
-                // Capture CSS
-                state.css[id] = this.captureElementCSS(el);
+                state.css[id] = this._captureCSS(el);
 
-                // Capture content
-                const content = this.captureElementContent(el);
-                if (content !== null) {
-                    state.content[id] = content;
-                }
+                const content = this._captureContent(el);
+                if (content !== null) state.content[id] = content;
             });
 
             return state;
         }
 
-        // ── Capture element attributes (excluding style) ─────────────────────
-        captureElementAttributes(el) {
-            const attrs = {};
-            const ignore = ['style']; // Style được lưu riêng ở state.css
-
-            Array.from(el.attributes).forEach(attr => {
-                if (!ignore.includes(attr.name)) {
-                    if (attr.name === 'class') {
-                        // Loại bỏ các class editor tạm thời để tránh xung đột khi restore
-                        const classes = attr.value.split(/\s+/).filter(c =>
-                            !c.startsWith('editor-') &&
-                            c !== 'selected' &&
-                            c !== 'editing' &&
-                            c !== 'editor-effect-target'
-                        );
-                        if (classes.length > 0) attrs[attr.name] = classes.join(' ');
-                    } else {
-                        attrs[attr.name] = attr.value;
-                    }
-                }
-            });
-            return attrs;
-        }
-
-        // ── Get element ID ────────────────────────────────────────────────────
-        getElementId(el) {
-            if (!el || typeof el.getAttribute !== 'function') return '';
-            const baseId = el.getAttribute('data-editable') ||
-                el.getAttribute('data-editor-id') ||
-                el.getAttribute('data-image-editable') ||
-                el.getAttribute('data-edit-map') ||
-                el.getAttribute('data-edit-map-href') ||
-                '';
-
-            // Don't add scope prefix here - we'll use scope in storage key instead
-            return baseId;
-        }
-
-        getRelativeNodePath(root, node) {
-            if (!root || !node || root === node) return '';
-            const path = [];
-            let current = node;
-
-            while (current && current !== root) {
-                const parent = current.parentElement;
-                if (!parent) break;
-                const index = Array.from(parent.children).indexOf(current);
-                path.unshift(index);
-                current = parent;
-            }
-
-            return path.join('.');
-        }
-
-        resolveRelativeNodePath(root, path) {
-            if (!root || !path) return root;
-            const indexes = String(path)
-                .split('.')
-                .map((part) => parseInt(part, 10))
-                .filter((value) => Number.isInteger(value) && value >= 0);
-
-            let current = root;
-            for (const index of indexes) {
-                if (!current?.children?.[index]) return null;
-                current = current.children[index];
-            }
-
-            return current;
-        }
-
-        getNodePathFromBody(node) {
-            const body = document.body;
-            if (!node || !body || node === body) return '';
-
-            const path = [];
-            let current = node;
-
-            while (current && current !== body) {
-                const parent = current.parentElement;
-                if (!parent) break;
-                const index = Array.from(parent.children).indexOf(current);
-                path.unshift(index);
-                current = parent;
-            }
-
-            return path.join('.');
-        }
-
-        resolveNodePathFromBody(path) {
-            if (!document.body) return null;
-            if (!path) return document.body;
-
-            const indexes = String(path)
-                .split('.')
-                .map((part) => parseInt(part, 10))
-                .filter((value) => Number.isInteger(value) && value >= 0);
-
-            let current = document.body;
-            for (const index of indexes) {
-                if (!current?.children?.[index]) return null;
-                current = current.children[index];
-            }
-
-            return current;
-        }
-
-        captureNestedStyles(el) {
-            if (!el?.querySelectorAll) return [];
-            const nested = [];
-
-            el.querySelectorAll('*').forEach((node) => {
-                const cssText = node.style?.cssText || '';
-                const src =
-                    node.tagName === 'IMG'
-                        ? node.getAttribute('src') || node.src || ''
-                        : '';
-
-                if (!cssText && !src) return;
-
-                nested.push({
-                    path: this.getRelativeNodePath(el, node),
-                    cssText,
-                    ...(src ? { src } : {}),
-                });
-            });
-
-            return nested;
-        }
-
-        // ── Capture element CSS ───────────────────────────────────────────────
-        captureElementCSS(el) {
-            if (!el) return {};
-            const css = {};
-            const style = el.style;
-
-            // Transform properties (most important for undo/redo)
-            if (style.transform) css.transform = style.transform;
-            if (el.dataset.editorTx) css.tx = el.dataset.editorTx;
-            if (el.dataset.editorTy) css.ty = el.dataset.editorTy;
-            if (el.dataset.editorRotation) css.rotation = el.dataset.editorRotation;
-            if (style.cssText) css.cssText = style.cssText;
-
-            // Size properties
-            if (style.width) css.width = style.width;
-            if (style.height) css.height = style.height;
-
-            // Position properties
-            if (style.position) css.position = style.position;
-            if (style.left) css.left = style.left;
-            if (style.top) css.top = style.top;
-            if (style.zIndex) css.zIndex = style.zIndex;
-            if (el.dataset.zIndex) css.datasetZIndex = el.dataset.zIndex;
-
-            // Text properties
-            if (style.fontSize) css.fontSize = style.fontSize;
-            if (style.fontFamily) css.fontFamily = style.fontFamily;
-            if (style.fontWeight) css.fontWeight = style.fontWeight;
-            if (style.fontStyle) css.fontStyle = style.fontStyle;
-            if (style.color) css.color = style.color;
-            if (style.textAlign) css.textAlign = style.textAlign;
-            if (style.lineHeight) css.lineHeight = style.lineHeight;
-            if (style.letterSpacing) css.letterSpacing = style.letterSpacing;
-            if (style.textDecoration) css.textDecoration = style.textDecoration;
-            if (style.textTransform) css.textTransform = style.textTransform;
-
-            // Visual properties
-            if (style.opacity) css.opacity = style.opacity;
-            if (style.filter) css.filter = style.filter;
-            if (style.borderRadius) css.borderRadius = style.borderRadius;
-            if (style.boxShadow) css.boxShadow = style.boxShadow;
-            if (style.backgroundColor) css.backgroundColor = style.backgroundColor;
-            if (style.backgroundImage) css.backgroundImage = style.backgroundImage;
-            if (style.backgroundSize) css.backgroundSize = style.backgroundSize;
-            if (style.backgroundPosition) css.backgroundPosition = style.backgroundPosition;
-            if (style.backgroundRepeat) css.backgroundRepeat = style.backgroundRepeat;
-            if (style.clipPath) css.clipPath = style.clipPath;
-            if (style.objectFit) css.objectFit = style.objectFit;
-            if (style.objectPosition) css.objectPosition = style.objectPosition;
-            if (style.transformOrigin) css.transformOrigin = style.transformOrigin;
-            if (style.display) css.display = style.display;
-            if (style.overflow) css.overflow = style.overflow;
-            if (style.whiteSpace) css.whiteSpace = style.whiteSpace;
-
-            // Animation
-            if (style.animation) css.animation = style.animation;
-
-            const nested = this.captureNestedStyles(el);
-            if (nested.length > 0) css.nested = nested;
-
-            return css;
-        }
-
-        // ── Capture element content ───────────────────────────────────────────
-        captureElementContent(el) {
-            // For images
-            if (el.tagName === 'IMG' || el.hasAttribute('data-image-editable')) {
-                if (el.tagName === 'IMG') {
-                    return el.src || '';
-                } else {
-                    const bgImage = el.style.backgroundImage || '';
-                    const match = bgImage.match(/url\(['"]?([^'"]+)['"]?\)/);
-                    if (match) return match[1];
-                    const childImg = el.querySelector('img');
-                    return childImg?.src || '';
-                }
-            }
-
-            // For text elements - use innerHTML to preserve formatting
-            if (el.hasAttribute('data-editable') || el.hasAttribute('data-editor-id')) {
-                return el.innerHTML || '';
-            }
-
-            return null;
-        }
-
-        // ── Capture background state ──────────────────────────────────────────
-        captureBackgroundState() {
-            const body = document.body;
-            if (!body) return null;
-            const computedStyle = getComputedStyle(body);
-            return {
-                backgroundColor: computedStyle.backgroundColor,
-                backgroundImage: computedStyle.backgroundImage,
-                backgroundSize: computedStyle.backgroundSize,
-                backgroundPosition: computedStyle.backgroundPosition,
-                backgroundRepeat: computedStyle.backgroundRepeat,
-                backgroundAttachment: computedStyle.backgroundAttachment
-            };
-        }
-
-        // ── Capture specific element state ───────────────────────────────────
         captureElementState(el) {
             if (!el) return null;
-            const id = this.getElementId(el);
-            const state = {
-                id,
-                css: this.captureElementCSS(el),
-                content: this.captureElementContent(el),
-                metadata: {}
-            };
-
-            // Only capture background for canvas or if explicitly requested
+            const id = this._getElementId(el);
+            const state = { id, css: this._captureCSS(el), content: this._captureContent(el), metadata: {} };
             if (id === 'canvas' || el === document.body) {
-                state.metadata.background = this.captureBackgroundState();
+                state.metadata.background = this._captureBackground();
             }
-            
             return state;
         }
 
-        // ── Apply specific element state ────────────────────────────────────
-        applyElementState(el, state) {
-            if (!el || !state) return;
-            if (state.css) this.applyElementCSS(el, state.css);
-            if (state.content !== undefined) this.applyElementContent(el, state.content);
-            if (state.metadata?.background) this.applyBackgroundState(state.metadata.background);
-        }
+        // ── State Application ─────────────────────────────────────────────────
 
-        // ── Apply state to DOM ────────────────────────────────────────────────
         applyState(state) {
             if (!state) return;
 
-            // Bước 1: Tái tạo cấu trúc cho các phần tử được tạo động (như clone/copy/add text)
-            if (state.structure) {
-                Object.entries(state.structure).forEach(([id, info]) => {
-                    let el = document.querySelector(
-                        `[data-editable="${id}"], [data-editor-id="${id}"], [data-image-editable="${id}"], [data-edit-map="${id}"], [data-edit-map-href="${id}"]`
-                    );
+            // Apply background FIRST so it is not lost/overwritten by later DOM mutations
+            // if (state.metadata?.background) this._applyBackground(state.metadata.background);
 
-                    if (!el) {
-                        console.log('[State Manager] Recreating missing element:', id);
-                        el = document.createElement(info.tagName);
+            if (state.structure) this._reconcileStructure(state.structure);
 
-                        // Áp dụng lại các thuộc tính (attrs, data-, class...)
-                        Object.entries(info.attributes || {}).forEach(([name, value]) => {
-                            el.setAttribute(name, value);
-                        });
+            Object.entries(state.css || {}).forEach(([id, css]) =>
+                queryById(id).forEach(el => this._applyCSS(el, css))
+            );
 
-                        // Tìm phần tử cha để gắn vào
-                        let parent = null;
-                        if (info.parentId) {
-                            parent = document.querySelector(
-                                `[data-editable="${info.parentId}"], [data-editor-id="${info.parentId}"], [data-image-editable="${info.parentId}"]`
-                            );
-                        }
-                        if (!parent && info.parentPath !== undefined) {
-                            parent = this.resolveNodePathFromBody(info.parentPath);
-                        }
-
-                        const targetParent = parent || document.body;
-                        const siblings = Array.from(targetParent.children || []);
-                        const insertBeforeNode =
-                            Number.isInteger(info.childIndex) && info.childIndex >= 0
-                                ? siblings[info.childIndex] || null
-                                : null;
-
-                        if (insertBeforeNode) {
-                            targetParent.insertBefore(el, insertBeforeNode);
-                        } else {
-                            targetParent.appendChild(el);
-                        }
-                    }
-                });
-            }
-
-            // Apply CSS to elements
-            Object.entries(state.css || {}).forEach(([id, css]) => {
-                const elements = document.querySelectorAll(
-                    `[data-editable="${id}"], [data-editor-id="${id}"], [data-image-editable="${id}"], [data-edit-map="${id}"], [data-edit-map-href="${id}"]`
-                );
-                elements.forEach(el => this.applyElementCSS(el, css));
-            });
-
-            // Apply content to elements
-            Object.entries(state.content || {}).forEach(([id, content]) => {
-                const elements = document.querySelectorAll(
-                    `[data-editable="${id}"], [data-editor-id="${id}"], [data-image-editable="${id}"]`
-                );
-                elements.forEach(el => this.applyElementContent(el, content));
-            });
-
-            // Apply background
-            if (state.metadata?.background) {
-                this.applyBackgroundState(state.metadata.background);
-            }
+            Object.entries(state.content || {}).forEach(([id, content]) =>
+                queryById(id).forEach(el => this._applyContent(el, content))
+            );
+            if (state.metadata?.background) this._applyBackground(state.metadata.background);
         }
 
-        // ── Apply CSS to element ──────────────────────────────────────────────
-        applyElementCSS(el, css) {
-            if (!el || !css) return;
+        applyElementState(el, state) {
+            if (!el || !state) return;
 
-            if (css.cssText) {
-                el.style.cssText = css.cssText;
-            }
-            
-            Object.entries(css).forEach(([prop, value]) => {
-                if (prop === 'cssText' || prop === 'nested' || prop === 'datasetZIndex') return;
-                if (prop === 'tx' || prop === 'ty' || prop === 'rotation') {
-                    // Dataset properties
-                    if (prop === 'tx') el.dataset.editorTx = value;
-                    if (prop === 'ty') el.dataset.editorTy = value;
-                    if (prop === 'rotation') el.dataset.editorRotation = value;
-                } else {
-                    // Style properties
-                    try {
-                        el.style[prop] = value;
-                    } catch (e) { }
-                }
-            });
+            const id = this._getElementId(el);
+            const isGlobal = state.id === undefined;
 
-            if (css.datasetZIndex !== undefined) {
-                el.dataset.zIndex = css.datasetZIndex;
-            }
+            const css = isGlobal ? (state.css?.[id] ?? null) : state.css;
+            const content = isGlobal ? (state.content?.[id] ?? undefined) : state.content;
+            const bg = state.metadata?.background;
 
-            // Update CSS variables for animations/transforms
-            if (css.tx !== undefined || css.ty !== undefined) {
-                el.style.setProperty('--el-tx', (parseFloat(css.tx) || 0) + 'px');
-                el.style.setProperty('--el-ty', (parseFloat(css.ty) || 0) + 'px');
-            }
-
-            if (Array.isArray(css.nested)) {
-                css.nested.forEach((entry) => {
-                    const targetNode = this.resolveRelativeNodePath(el, entry.path);
-                    if (!targetNode || !targetNode.style) return;
-                    if (entry.cssText) {
-                        targetNode.style.cssText = entry.cssText;
-                    }
-                    if (entry.src && targetNode.tagName === 'IMG') {
-                        targetNode.setAttribute('src', entry.src);
-                    }
-                });
-            }
+            if (css) this._applyCSS(el, css);
+            if (content !== undefined) this._applyContent(el, content);
+            if (bg) this._applyBackground(bg);
         }
 
-        // ── Apply content to element ──────────────────────────────────────────
-        applyElementContent(el, content) {
-            if (!el || content === undefined) return;
+        // ── Undo / Redo ───────────────────────────────────────────────────────
 
-            // For images
-            if (el.tagName === 'IMG') {
-                el.src = content;
-            } else if (el.hasAttribute('data-image-editable')) {
-                const childImg = el.querySelector('img');
-                if (childImg) {
-                    childImg.src = content;
-                } else {
-                    el.style.backgroundImage = `url('${content}')`;
-                }
-            }
-            // For text - use innerHTML to preserve formatting
-            else if (el.hasAttribute('data-editable') || el.hasAttribute('data-editor-id') || el.isContentEditable) {
-                el.innerHTML = content;
-            }
+        saveStateDebounced() { this._debouncedSave(); }
+
+        // ── Element-level save (recommended for normal editing) ────────────────
+        saveElementState(el) {
+            if (!el) return;
+            const elementState = this.captureElementState(el);
+            if (!elementState) return;
+
+            const hash = quickHash(elementState);
+            if (hash === this._lastHash) return;
+
+            this._lastHash = hash;
+            this.undoStack.push({ __element: true, el, state: elementState });
+            if (this.undoStack.length > MAX_STACK_SIZE) this.undoStack.shift();
+            this.redoStack = [];
+            console.log(`[StateManager] element saved — undo: ${this.undoStack.length}`);
         }
 
-        // ── Apply background state ────────────────────────────────────────────
-        applyBackgroundState(bgData) {
-            if (!bgData) return;
-
-            try {
-                sessionStorage.setItem('html-editor-background', JSON.stringify(bgData));
-
-                // Apply to DOM via style override
-                let override = document.getElementById('__bg_override__');
-                if (!override) {
-                    override = document.createElement('style');
-                    override.id = '__bg_override__';
-                    document.head.appendChild(override);
-                }
-
-                let css = '';
-                if (bgData.backgroundImage && bgData.backgroundImage !== 'none') {
-                    css = `html,body{background-image:${bgData.backgroundImage}!important;background-size:${bgData.backgroundSize || 'cover'}!important;background-position:${bgData.backgroundPosition || 'center'}!important;background-color:${bgData.backgroundColor || 'transparent'}!important;background-repeat:${bgData.backgroundRepeat || 'no-repeat'}!important;background-attachment:${bgData.backgroundAttachment || 'scroll'}!important;}`;
-                } else if (bgData.background && bgData.background !== 'none') {
-                    css = `html,body{background:${bgData.background}!important;background-image:none!important;}`;
-                } else if (bgData.backgroundColor) {
-                    css = `html,body{background-color:${bgData.backgroundColor}!important;background-image:none!important;}`;
-                }
-
-                if (css) {
-                    override.textContent = css;
-                }
-
-                // Also apply directly to body as fallback
-                const body = document.body;
-                if (body) {
-                    if (bgData.backgroundColor !== undefined) body.style.backgroundColor = bgData.backgroundColor;
-                    if (bgData.backgroundImage !== undefined) body.style.backgroundImage = bgData.backgroundImage;
-                    if (bgData.backgroundSize !== undefined) body.style.backgroundSize = bgData.backgroundSize;
-                    if (bgData.backgroundPosition !== undefined) body.style.backgroundPosition = bgData.backgroundPosition;
-                    if (bgData.backgroundRepeat !== undefined) body.style.backgroundRepeat = bgData.backgroundRepeat;
-                    if (bgData.backgroundAttachment !== undefined) body.style.backgroundAttachment = bgData.backgroundAttachment;
-                }
-            } catch (e) {
-                console.error('[State Manager] Failed to apply background:', e);
-            }
-        }
-
-        // ── Save state with debounce ──────────────────────────────────────────
-        saveStateDebounced() {
-            clearTimeout(this.debounceTimer);
-            this.debounceTimer = setTimeout(() => {
-                this.saveState();
-            }, this.debounceDelay);
-        }
-
-        // ── Save current state to undo stack ──────────────────────────────────
         saveState() {
             const state = this.captureCurrentState();
+            const hash = quickHash(state);
 
-            // Don't save if identical to last state
-            if (this.undoStack.length > 0) {
-                const lastState = this.undoStack[this.undoStack.length - 1];
-                if (JSON.stringify(lastState) === JSON.stringify(state)) {
-                    return;
-                }
-            }
+            if (hash === this._lastHash) return;
+            this._lastHash = hash;
 
             this.undoStack.push(state);
-
-            // Limit stack size
-            if (this.undoStack.length > this.maxStackSize) {
-                this.undoStack.shift();
-            }
-
-            // Clear redo stack on new action
+            if (this.undoStack.length > MAX_STACK_SIZE) this.undoStack.shift();
             this.redoStack = [];
 
-            console.log('[State Manager] State saved. Undo stack:', this.undoStack.length);
+            console.log(`[StateManager] saved — undo: ${this.undoStack.length}`);
         }
 
-        // ── Undo ──────────────────────────────────────────────────────────────
         undo() {
-            if (this.undoStack.length === 0) {
-                console.log('[State Manager] Nothing to undo');
-                return false;
+            if (!this.undoStack.length) { console.log('[StateManager] nothing to undo'); return false; }
+
+            const last = this.undoStack.pop();
+            this.redoStack.push(this.captureCurrentState());
+
+            if (last && last.__element) {
+                // Element-level undo (much safer, no layout breakage)
+                const targetEl = last.el || document.querySelector(`[data-editor-id="${last.state.id}"]`);
+                this.applyElementState(targetEl, last.state);
+            } else {
+                this.applyState(last);
             }
 
-            // Save current state to redo stack
-            const currentState = this.captureCurrentState();
-            this.redoStack.push(currentState);
-
-            // Pop and apply previous state
-            const previousState = this.undoStack.pop();
-            this.applyState(previousState);
-
-            console.log('[State Manager] Undo applied. Undo stack:', this.undoStack.length, 'Redo stack:', this.redoStack.length);
+            console.log(`[StateManager] undo — undo: ${this.undoStack.length}, redo: ${this.redoStack.length}`);
             return true;
         }
 
-        // ── Redo ──────────────────────────────────────────────────────────────
         redo() {
-            if (this.redoStack.length === 0) {
-                console.log('[State Manager] Nothing to redo');
-                return false;
+            if (!this.redoStack.length) { console.log('[StateManager] nothing to redo'); return false; }
+
+            const last = this.redoStack.pop();
+            this.undoStack.push(this.captureCurrentState());
+
+            if (last && last.__element) {
+                const targetEl = last.el || document.querySelector(`[data-editor-id="${last.state.id}"]`);
+                this.applyElementState(targetEl, last.state);
+            } else {
+                this.applyState(last);
             }
 
-            // Save current state to undo stack
-            const currentState = this.captureCurrentState();
-            this.undoStack.push(currentState);
-
-            // Pop and apply next state
-            const nextState = this.redoStack.pop();
-            this.applyState(nextState);
-
-            console.log('[State Manager] Redo applied. Undo stack:', this.undoStack.length, 'Redo stack:', this.redoStack.length);
+            console.log(`[StateManager] redo — undo: ${this.undoStack.length}, redo: ${this.redoStack.length}`);
             return true;
         }
 
-        // ── Save to localStorage ──────────────────────────────────────────────
-        saveToLocalStorage(scope) {
-            const state = this.captureCurrentState();
-            const key = this.getStorageKey(scope);
-
-            try {
-                localStorage.setItem(key, JSON.stringify(state));
-                console.log('[State Manager] Saved to localStorage:', key);
-                return true;
-            } catch (e) {
-                console.error('[State Manager] Failed to save to localStorage:', e);
-                return false;
-            }
-        }
-
-        // ── Load from localStorage ────────────────────────────────────────────
-        loadFromLocalStorage(scope) {
-            const key = this.getStorageKey(scope);
-
-            try {
-                const data = localStorage.getItem(key);
-                if (!data) return null;
-
-                const state = JSON.parse(data);
-                console.log('[State Manager] Loaded from localStorage:', key);
-                return state;
-            } catch (e) {
-                console.error('[State Manager] Failed to load from localStorage:', e);
-                return null;
-            }
-        }
-
-        // ── Get storage key ───────────────────────────────────────────────────
-        getStorageKey(scope) {
-            if (!scope || !scope.key) {
-                return 'editor-state:default';
-            }
-            return `editor-state:${scope.key}`;
-        }
-
-        // ── Clear storage ─────────────────────────────────────────────────────
-        clearStorage(scope) {
-            const key = this.getStorageKey(scope);
-            localStorage.removeItem(key);
-            console.log('[State Manager] Cleared storage:', key);
-        }
-
-        // ── Get stack info ────────────────────────────────────────────────────
         getStackInfo() {
             return {
                 canUndo: this.undoStack.length > 0,
                 canRedo: this.redoStack.length > 0,
                 undoCount: this.undoStack.length,
-                redoCount: this.redoStack.length
+                redoCount: this.redoStack.length,
             };
+        }
+
+        // ── LocalStorage ──────────────────────────────────────────────────────
+
+        saveToLocalStorage(scope) {
+            try {
+                localStorage.setItem(this._storageKey(scope), JSON.stringify(this.captureCurrentState()));
+                return true;
+            } catch (e) {
+                console.error('[StateManager] save failed:', e);
+                return false;
+            }
+        }
+
+        loadFromLocalStorage(scope) {
+            try {
+                const raw = localStorage.getItem(this._storageKey(scope));
+                return raw ? JSON.parse(raw) : null;
+            } catch (e) {
+                console.error('[StateManager] load failed:', e);
+                return null;
+            }
+        }
+
+        clearStorage(scope) {
+            localStorage.removeItem(this._storageKey(scope));
+        }
+
+        // ── Private: capture helpers ──────────────────────────────────────────
+
+        _getElementId(el) {
+            if (!el?.getAttribute) return '';
+            for (const attr of EDITABLE_ID_ATTRS) {
+                const v = el.getAttribute(attr);
+                if (v) return v;
+            }
+            return '';
+        }
+
+        _captureAttributes(el) {
+            const attrs = {};
+            for (const { name, value } of el.attributes) {
+                if (name === 'style') continue;
+                if (name === 'class') {
+                    const clean = value.split(/\s+/)
+                        .filter(c => !c.startsWith('editor-') && !TEMP_CLASSES.has(c))
+                        .join(' ');
+                    if (clean) attrs.class = clean;
+                } else {
+                    attrs[name] = value;
+                }
+            }
+            return attrs;
+        }
+
+        _captureCSS(el) {
+            if (!el) return {};
+            const { style, dataset } = el;
+            const css = {};
+
+            for (const prop of CAPTURED_STYLE_PROPS) {
+                if (style[prop]) css[prop] = style[prop];
+            }
+
+            // Dataset-driven transform helpers
+            if (dataset.editorTx) css.tx = dataset.editorTx;
+            if (dataset.editorTy) css.ty = dataset.editorTy;
+            if (dataset.editorRotation) css.rotation = dataset.editorRotation;
+            if (dataset.zIndex) css.datasetZIndex = dataset.zIndex;
+
+            const nested = this._captureNestedStyles(el);
+            if (nested.length) css.nested = nested;
+
+            return css;
+        }
+
+        _captureNestedStyles(el) {
+            if (!el?.querySelectorAll) return [];
+            const nested = [];
+            el.querySelectorAll('*').forEach(node => {
+                const cssText = node.style?.cssText || '';
+                const src = node.tagName === 'IMG' ? (node.getAttribute('src') || '') : '';
+                if (!cssText && !src) return;
+                nested.push({ path: this._relativePath(el, node), cssText, ...(src ? { src } : {}) });
+            });
+            return nested;
+        }
+
+        _captureContent(el) {
+            if (el.tagName === 'IMG') return String(el.src || '');
+
+            if (el.hasAttribute('data-image-editable')) {
+                const childImg = el.querySelector('img');
+                if (childImg) return childImg.src || '';
+                const m = (el.style.backgroundImage || '').match(/url\(['"]?([^'"]+)['"]?\)/);
+                return m ? m[1] : '';
+            }
+
+            if (el.hasAttribute('data-editable') || el.hasAttribute('data-editor-id')) {
+                return String(el.innerHTML || '');
+            }
+
+            return null;
+        }
+
+        _captureBackground() {
+            // Capture background from the most relevant element: data-editor-background, .hero, or body
+            // const targetEl = document.querySelector('[data-editor-background]') || document.querySelector('.hero') || document.body;
+            // if (!targetEl) return null;
+            // const s = getComputedStyle(targetEl);
+            const body = document.body;
+            if (!body) return null;
+            const s = getComputedStyle(body)
+            return {
+                background: s.background,
+                backgroundColor: s.backgroundColor,
+                backgroundImage: s.backgroundImage,
+                backgroundSize: s.backgroundSize,
+                backgroundPosition: s.backgroundPosition,
+                backgroundRepeat: s.backgroundRepeat,
+                backgroundAttachment: s.backgroundAttachment,
+            };
+        }
+
+        // ── Private: apply helpers ────────────────────────────────────────────
+
+        /**
+         * Reconcile the live DOM against state.structure:
+         *  1. Create elements that are missing.
+         *  2. Remove elements that are no longer in the snapshot.
+         */
+        _reconcileStructure(structure) {
+            // Pass 1 — ensure every element in state exists in the DOM
+            for (const [id, info] of Object.entries(structure)) {
+                if (queryById(id).length) continue;   // already present
+
+                console.log('[StateManager] recreating element:', id);
+                const el = document.createElement(info.tagName);
+                for (const [name, value] of Object.entries(info.attributes || {})) {
+                    el.setAttribute(name, value);
+                }
+
+                let parent = (info.parentId && queryById(info.parentId)[0]) ||
+                    this._resolveBodyPath(info.parentPath) ||
+                    document.body;
+
+                const ref = parent.children[info.childIndex] ?? null;
+                ref ? parent.insertBefore(el, ref) : parent.appendChild(el);
+            }
+
+            // Pass 2 — remove ghost elements not present in snapshot
+            document.querySelectorAll(
+                EDITABLE_SELECTOR + ', [data-history]'
+            ).forEach(el => {
+                const id = this._getElementId(el);
+                if (id && id !== 'body-background' && !structure[id]) {
+                    console.log('[StateManager] removing ghost element:', id);
+                    el.remove();
+                }
+            });
+        }
+
+        _applyCSS(el, css) {
+            if (!el || !css) return;
+
+            // Apply full cssText first (fastest path — sets everything in one shot)
+            if (css.cssText) el.style.cssText = css.cssText;
+
+            // Patch individual properties on top
+            for (const prop of CAPTURED_STYLE_PROPS) {
+                if (prop === 'cssText') continue;
+                if (css[prop] !== undefined) {
+                    // Avoid overwriting if already set by cssText (preserves !important)
+                    if (css.cssText && el.style[prop] === css[prop]) continue;
+                    try { el.style[prop] = css[prop]; } catch (_) { /* skip unsupported */ }
+                }
+            }
+
+            // Dataset properties
+            if (css.tx !== undefined) el.dataset.editorTx = css.tx;
+            if (css.ty !== undefined) el.dataset.editorTy = css.ty;
+            if (css.rotation !== undefined) el.dataset.editorRotation = css.rotation;
+            if (css.datasetZIndex !== undefined) el.dataset.zIndex = css.datasetZIndex;
+
+            // CSS custom properties used by transform logic
+            if (css.tx !== undefined || css.ty !== undefined) {
+                el.style.setProperty('--el-tx', `${parseFloat(css.tx) || 0}px`);
+                el.style.setProperty('--el-ty', `${parseFloat(css.ty) || 0}px`);
+            }
+
+            // Nested child styles
+            if (Array.isArray(css.nested)) {
+                css.nested.forEach(({ path, cssText, src }) => {
+                    const node = this._resolveRelativePath(el, path);
+                    if (!node?.style) return;
+                    if (cssText) node.style.cssText = cssText;
+                    if (src && node.tagName === 'IMG') node.setAttribute('src', src);
+                });
+            }
+        }
+
+        _applyContent(el, content) {
+            if (!el || content === undefined) return;
+
+            if (el.tagName === 'IMG') {
+                el.src = String(content || '');
+                return;
+            }
+
+            if (el.hasAttribute('data-image-editable')) {
+                const childImg = el.querySelector('img');
+                if (childImg) {
+                    childImg.src = String(content || '');
+                } else {
+                    const safe = String(content || '');
+                    el.style.backgroundImage = safe && !safe.startsWith('url')
+                        ? `url('${safe}')` : safe;
+                }
+                return;
+            }
+
+            if (el.hasAttribute('data-editable') || el.hasAttribute('data-editor-id') || el.isContentEditable) {
+                el.innerHTML = String(content || '');
+            }
+        }
+
+        _applyBackground(bg) {
+            if (!bg) return;
+            try {
+                // Store for runtime reloads
+                sessionStorage.setItem('html-editor-background', JSON.stringify(bg));
+
+                // Find the element we injected into previously (same logic as injector)
+                const bgTarget = document.querySelector('[data-editor-background]') || document.querySelector('.hero') || document.body;
+                if (!bgTarget) return;
+
+                // Build CSS for html,body fallback (keeps existing behavior)
+                let css = '';
+                if (bg.backgroundImage && bg.backgroundImage !== 'none') {
+                    css = `html,body{background-image:${bg.backgroundImage}!important;` +
+                        `background-size:${bg.backgroundSize || 'cover'}!important;` +
+                        `background-position:${bg.backgroundPosition || 'center'}!important;` +
+                        `background-color:${bg.backgroundColor || 'transparent'}!important;` +
+                        `background-repeat:${bg.backgroundRepeat || 'no-repeat'}!important;` +
+                        `background-attachment:${bg.backgroundAttachment || 'scroll'}!important;}`;
+                } else if (bg.background && bg.background !== 'none') {
+                    css = `html,body{background:${bg.background}!important;background-image:none!important;}`;
+                } else if (bg.backgroundColor) {
+                    css = `html,body{background-color:${bg.backgroundColor}!important;background-image:none!important;}`;
+                }
+
+                let override = document.getElementById('editor-bg-override');
+                if (!override) {
+                    override = document.createElement('style');
+                    override.id = 'editor-bg-override';
+                    document.head.appendChild(override);
+                }
+                override.textContent = css;
+
+                // Fallback: also write directly to body.style
+                const props = ['backgroundColor', 'backgroundImage', 'backgroundSize',
+                    'backgroundPosition', 'backgroundRepeat', 'backgroundAttachment'];
+                const body = document.body;
+                if (body) props.forEach(p => { if (bg[p] !== undefined) body.style[p] = bg[p]; });
+
+            } catch (e) {
+                console.error('[StateManager] background apply failed:', e);
+            }
+        }
+
+        // ── Private: DOM path helpers ─────────────────────────────────────────
+
+        _relativePath(root, node) {
+            if (!root || !node || root === node) return '';
+            const path = [];
+            let cur = node;
+            while (cur && cur !== root) {
+                const parent = cur.parentElement;
+                if (!parent) break;
+                path.unshift(Array.from(parent.children).indexOf(cur));
+                cur = parent;
+            }
+            return path.join('.');
+        }
+
+        _resolveRelativePath(root, path) {
+            if (!root || !path) return root;
+            return this._walkPath(root, path);
+        }
+
+        _pathFromBody(node) {
+            const body = document.body;
+            if (!node || !body || node === body) return '';
+            const path = [];
+            let cur = node;
+            while (cur && cur !== body) {
+                const parent = cur.parentElement;
+                if (!parent) break;
+                path.unshift(Array.from(parent.children).indexOf(cur));
+                cur = parent;
+            }
+            return path.join('.');
+        }
+
+        _resolveBodyPath(path) {
+            if (!document.body) return null;
+            if (!path) return document.body;
+            return this._walkPath(document.body, path);
+        }
+
+        /** Shared tree-walking logic used by both relative and body-rooted paths. */
+        _walkPath(root, path) {
+            const indexes = String(path).split('.')
+                .map(Number)
+                .filter(n => Number.isInteger(n) && n >= 0);
+            let cur = root;
+            for (const idx of indexes) {
+                if (!cur?.children?.[idx]) return null;
+                cur = cur.children[idx];
+            }
+            return cur;
+        }
+
+        // ── Private: storage key ──────────────────────────────────────────────
+
+        _storageKey(scope) {
+            return scope?.key ? `editor-state:${scope.key}` : 'editor-state:default';
         }
     }
 
-    // ── Export to global scope ────────────────────────────────────────────────
+    // ── Export ────────────────────────────────────────────────────────────────
+
     window.EditorStateManager = EditorStateManager;
 
-    // Create global instance
     if (!window.editorStateManager) {
         window.editorStateManager = new EditorStateManager();
-        console.log('[State Manager] Initialized');
     }
 })();

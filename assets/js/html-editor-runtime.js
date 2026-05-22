@@ -4,24 +4,54 @@
 
     console.log('[HTML Editor Runtime] Script loaded and initialized');
 
-    // ── Clear sessionStorage on fresh load ──────────────────────────────────
-    try {
-        const currentScope = window.__htmlEditorScope;
-        const lastScope = sessionStorage.getItem('html-editor-last-scope');
+    // ── Scope Syncing ───────────────────────────────────────────────────────
+    const syncScopeToLocalStorage = (scope) => {
+        if (!scope || !scope.key) return;
+        try {
+            const lastScopeRaw = localStorage.getItem('html-editor-last-scope');
+            let lastScopeObj = {};
 
-        if (currentScope && currentScope.key) {
-            if (lastScope && lastScope !== currentScope.key) {
-                console.log('[HTML Editor] Scope changed from', lastScope, 'to', currentScope.key, '- clearing session storage');
+            if (lastScopeRaw) {
+                try {
+                    lastScopeObj = JSON.parse(lastScopeRaw);
+                    if (typeof lastScopeObj !== 'object' || lastScopeObj === null) {
+                        lastScopeObj = { title: String(lastScopeRaw) };
+                    }
+                } catch (e) {
+                    lastScopeObj = { title: String(lastScopeRaw) };
+                }
+            }
+
+            const lastScopeKey = lastScopeObj.title || '';
+
+            // If we are switching to a completely different template/invitation
+            if (lastScopeKey && lastScopeKey !== scope.key) {
                 sessionStorage.removeItem('html-editor-transforms');
                 sessionStorage.removeItem('html-editor-rotations');
                 sessionStorage.removeItem('html-editor-background');
                 sessionStorage.removeItem('html-editor-text-content');
+                // Clear old name if it's a completely different item
+                if (scope.name) lastScopeObj.name = scope.name;
+                else delete lastScopeObj.name;
+            } else {
+                // Same item, only update name if we have a new valid one
+                if (scope.name && scope.name.trim()) {
+                    lastScopeObj.name = scope.name;
+                }
             }
-            sessionStorage.setItem('html-editor-last-scope', currentScope.key);
+
+            lastScopeObj.title = scope.key;
+            lastScopeObj.id = scope.id;
+            lastScopeObj.type = scope.type;
+            localStorage.setItem('html-editor-last-scope', JSON.stringify(lastScopeObj));
+            sessionStorage.removeItem('html-editor-last-scope');
+        } catch (e) {
+            console.warn('[HTML Editor] Could not sync scope:', e);
         }
-    } catch (e) {
-        console.warn('[HTML Editor] Could not sync sessionStorage scope:', e);
-    }
+    };
+
+    // Initial sync
+    syncScopeToLocalStorage(window.__htmlEditorScope);
 
     const getScopedKey = (key) => {
         if (!window.__htmlEditorScope || !window.__htmlEditorScope.key) return key;
@@ -96,45 +126,47 @@
         document.head.appendChild(s);
     };
 
-    addStyle('editor-styles',
-        '[data-editable],[data-editor-id],[data-image-editable],[data-edit-map],[data-edit-map-href],img{pointer-events:auto!important;touch-action:none!important;}' +
-        '.word-rotate-coords{pointer-events:none!important;}' +
-        '[data-editable],[data-editor-id],[data-image-editable],[data-edit-map],[data-edit-map-href],img{outline:2px dashed transparent;outline-offset:2px;transition:outline-color 0.15s,outline-offset 0.15s,box-shadow 0.15s;cursor:move;}' +
-        '[data-editable]:hover,[data-editor-id]:hover,[data-image-editable]:hover,[data-edit-map]:hover,[data-edit-map-href]:hover,img:hover{outline-color:#a855f7!important;cursor:move;}' +
-        '[data-editable].editor-layers-panel-hover,[data-editor-id].editor-layers-panel-hover,[data-image-editable].editor-layers-panel-hover,[data-edit-map].editor-layers-panel-hover,[data-edit-map-href].editor-layers-panel-hover,img.editor-layers-panel-hover{outline-color:#a855f7!important;cursor:move;}' +
-        '[data-editable].editing,[data-editor-id].editing,[data-image-editable].editing,[data-edit-map].editing,[data-edit-map-href].editing,img.editing,' +
-        '[data-editable].selected,[data-editor-id].selected,[data-image-editable].selected,[data-edit-map].selected,[data-edit-map-href].selected,img.selected{outline-color:#8b5cf6!important;box-shadow:0 0 0 2px rgba(139,92,246,0.12)!important;cursor:move;}' +
-        /* Chọn từ panel Lớp: vẫn dùng viền tím #a855f7 như :hover (class .editor-layers-panel-hover + .selected/.editing) */
-        '[data-editable].editor-layers-panel-hover.selected,[data-editor-id].editor-layers-panel-hover.selected,[data-image-editable].editor-layers-panel-hover.selected,[data-edit-map].editor-layers-panel-hover.selected,[data-edit-map-href].editor-layers-panel-hover.selected,img.editor-layers-panel-hover.selected,' +
-        '[data-editable].editor-layers-panel-hover.editing,[data-editor-id].editor-layers-panel-hover.editing,[data-image-editable].editor-layers-panel-hover.editing,[data-edit-map].editor-layers-panel-hover.editing,[data-edit-map-href].editor-layers-panel-hover.editing,img.editor-layers-panel-hover.editing{outline-color:#a855f7!important;box-shadow:none!important;cursor:move;}' +
-        '[data-editable][data-aos],[data-editor-id][data-aos],[data-image-editable][data-aos],[data-edit-map][data-aos],[data-edit-map-href][data-aos],img[data-aos],' +
-        '[data-editable].aos-animate,[data-editor-id].aos-animate,[data-image-editable].aos-animate,[data-edit-map].aos-animate,[data-edit-map-href].aos-animate,img.aos-animate{opacity:1!important;}' +
-        '.word-selection-handles{position:fixed;pointer-events:none;z-index:1000001;}' +
-        '.word-handle{position:absolute;width:8px;height:8px;background:#a855f7;border:2px solid white;border-radius:1px;pointer-events:auto;cursor:pointer;user-select:none;}' +
-        '.word-handle.nw{top:-4px;left:-4px;cursor:nw-resize;}.word-handle.n{top:-4px;left:50%;transform:translateX(-50%);cursor:n-resize;}' +
-        '.word-handle.ne{top:-4px;right:-4px;cursor:ne-resize;}.word-handle.e{top:50%;right:-4px;transform:translateY(-50%);cursor:e-resize;}' +
-        '.word-handle.se{bottom:-4px;right:-4px;cursor:se-resize;}.word-handle.s{bottom:-4px;left:50%;transform:translateX(-50%);cursor:s-resize;}' +
-        '.word-handle.sw{bottom:-4px;left:-4px;cursor:sw-resize;}.word-handle.w{top:50%;left:-4px;transform:translateY(-50%);cursor:w-resize;}' +
-        '.word-rotate-handle{position:absolute;top:-30px;left:50%;transform:translateX(-50%);width:20px;height:20px;background:#e91e63;border:2px solid white;border-radius:50%;cursor:grab;pointer-events:auto;display:flex;align-items:center;justify-content:center;color:white;font-size:10px;user-select:none;}' +
-        '.word-rotate-handle:active{cursor:grabbing;}' +
-        '.word-rotate-line{position:absolute;top:-20px;left:50%;transform:translateX(-50%);width:2px;height:16px;background:#a855f7;}' +
-        '.word-rotate-coords{position:absolute;top:-58px;left:50%;transform:translateX(-50%);padding:2px 8px;border-radius:999px;background:rgba(17,24,39,0.88);color:#fff;font:600 11px/1.2 monospace;pointer-events:none;white-space:nowrap;box-shadow:0 2px 10px rgba(0,0,0,0.18);}' +
-        '.word-rotation-menu{position:absolute;top:-80px;left:50%;transform:translateX(-50%);background:white;border:1px solid #ccc;border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,0.15);padding:8px;display:none;white-space:nowrap;z-index:10000;}' +
-        '.word-rotation-menu.show{display:block;}' +
-        '.word-rotation-option{display:block;padding:4px 8px;margin:2px 0;background:none;border:none;cursor:pointer;border-radius:2px;font-size:12px;color:#333;}' +
-        '.word-rotation-option:hover{background:#f0f0f0;}' +
-        '.word-copy-handle{position:absolute;top:-30px;left:calc(50% - 30px);transform:translateX(-50%);width:20px;height:20px;background:#6366f1;border:2px solid white;border-radius:50%;cursor:pointer;pointer-events:auto;display:flex;align-items:center;justify-content:center;color:white;font-size:10px;user-select:none;box-shadow:0 2px 4px rgba(0,0,0,0.2);}' +
-        '.word-delete-handle{position:absolute;top:-30px;left:calc(50% + 30px);transform:translateX(-50%);width:20px;height:20px;background:#ef4444;border:2px solid white;border-radius:50%;cursor:pointer;pointer-events:auto;display:flex;align-items:center;justify-content:center;color:white;font-size:10px;user-select:none;box-shadow:0 2px 4px rgba(0,0,0,0.2);}' +
-        '.word-cancel-parent-drag-handle{position:absolute;top:-30px;left:calc(50% + 50px);transform:translateX(-50%);width:20px;height:20px;background:#f97316;border:2px solid white;border-radius:50%;cursor:pointer;pointer-events:auto;display:flex;align-items:center;justify-content:center;color:white;font-size:10px;user-select:none;box-shadow:0 2px 4px rgba(0,0,0,0.2);}' +
-        /* Lock badge shown on selection handles when element is locked */
-        '.word-lock-badge{position:absolute;top:-30px;left:50%;transform:translateX(-50%);width:20px;height:20px;background:#f59e0b;border:2px solid white;border-radius:50%;pointer-events:none;display:flex;align-items:center;justify-content:center;color:white;font-size:10px;user-select:none;box-shadow:0 2px 4px rgba(0,0,0,0.2);}' +
-        '[data-image-editable],img{image-rendering:crisp-edges;image-rendering:-webkit-optimize-contrast;}' +
-        /* Locked state: applies to ALL editable types (text, image, stock) */
-        '.editor-element-locked{outline:2px solid #ef4444!important;outline-offset:2px;cursor:not-allowed!important;}' +
-        '.editor-element-locked:hover{outline-color:#dc2626!important;cursor:not-allowed!important;}' +
-        /* Parent drag enabled state */
-        '.editor-parent-drag-enabled{outline:3px solid #eab308!important;outline-offset:2px;box-shadow:0 0 0 4px rgba(234,179,8,0.2)!important;}'
-    );
+    if (!window.__isPreviewMode) {
+        addStyle('editor-styles',
+            '[data-editable],[data-editor-id],[data-image-editable],[data-edit-map],[data-edit-map-href],img{pointer-events:auto!important;touch-action:none!important;}' +
+            '.word-rotate-coords{pointer-events:none!important;}' +
+            '[data-editable],[data-editor-id],[data-image-editable],[data-edit-map],[data-edit-map-href],img{outline:2px dashed transparent;outline-offset:2px;transition:outline-color 0.15s,outline-offset 0.15s,box-shadow 0.15s;cursor:move;}' +
+            '[data-editable]:hover,[data-editor-id]:hover,[data-image-editable]:hover,[data-edit-map]:hover,[data-edit-map-href]:hover,img:hover{outline-color:#a855f7!important;cursor:move;}' +
+            '[data-editable].editor-layers-panel-hover,[data-editor-id].editor-layers-panel-hover,[data-image-editable].editor-layers-panel-hover,[data-edit-map].editor-layers-panel-hover,[data-edit-map-href].editor-layers-panel-hover,img.editor-layers-panel-hover{outline-color:#a855f7!important;cursor:move;}' +
+            '[data-editable].editing,[data-editor-id].editing,[data-image-editable].editing,[data-edit-map].editing,[data-edit-map-href].editing,img.editing,' +
+            '[data-editable].selected,[data-editor-id].selected,[data-image-editable].selected,[data-edit-map].selected,[data-edit-map-href].selected,img.selected{outline-color:#8b5cf6!important;box-shadow:0 0 0 2px rgba(139,92,246,0.12)!important;cursor:move;}' +
+            /* Chọn từ panel Lớp: vẫn dùng viền tím #a855f7 như :hover (class .editor-layers-panel-hover + .selected/.editing) */
+            '[data-editable].editor-layers-panel-hover.selected,[data-editor-id].editor-layers-panel-hover.selected,[data-image-editable].editor-layers-panel-hover.selected,[data-edit-map].editor-layers-panel-hover.selected,[data-edit-map-href].editor-layers-panel-hover.selected,img.editor-layers-panel-hover.selected,' +
+            '[data-editable].editor-layers-panel-hover.editing,[data-editor-id].editor-layers-panel-hover.editing,[data-image-editable].editor-layers-panel-hover.editing,[data-edit-map].editor-layers-panel-hover.editing,[data-edit-map-href].editor-layers-panel-hover.editing,img.editor-layers-panel-hover.editing{outline-color:#a855f7!important;box-shadow:none!important;cursor:move;}' +
+            '[data-editable][data-aos],[data-editor-id][data-aos],[data-image-editable][data-aos],[data-edit-map][data-aos],[data-edit-map-href][data-aos],img[data-aos],' +
+            '[data-editable].aos-animate,[data-editor-id].aos-animate,[data-image-editable].aos-animate,[data-edit-map].aos-animate,[data-edit-map-href].aos-animate,img.aos-animate{opacity:1!important;}' +
+            '.word-selection-handles{position:fixed;pointer-events:none;z-index:1000001;}' +
+            '.word-handle{position:absolute;width:8px;height:8px;background:#a855f7;border:2px solid white;border-radius:1px;pointer-events:auto;cursor:pointer;user-select:none;}' +
+            '.word-handle.nw{top:-4px;left:-4px;cursor:nw-resize;}.word-handle.n{top:-4px;left:50%;transform:translateX(-50%);cursor:n-resize;}' +
+            '.word-handle.ne{top:-4px;right:-4px;cursor:ne-resize;}.word-handle.e{top:50%;right:-4px;transform:translateY(-50%);cursor:e-resize;}' +
+            '.word-handle.se{bottom:-4px;right:-4px;cursor:se-resize;}.word-handle.s{bottom:-4px;left:50%;transform:translateX(-50%);cursor:s-resize;}' +
+            '.word-handle.sw{bottom:-4px;left:-4px;cursor:sw-resize;}.word-handle.w{top:50%;left:-4px;transform:translateY(-50%);cursor:w-resize;}' +
+            '.word-rotate-handle{position:absolute;top:-30px;left:50%;transform:translateX(-50%);width:20px;height:20px;background:#e91e63;border:2px solid white;border-radius:50%;cursor:grab;pointer-events:auto;display:flex;align-items:center;justify-content:center;color:white;font-size:10px;user-select:none;}' +
+            '.word-rotate-handle:active{cursor:grabbing;}' +
+            '.word-rotate-line{position:absolute;top:-20px;left:50%;transform:translateX(-50%);width:2px;height:16px;background:#a855f7;}' +
+            '.word-rotate-coords{position:absolute;top:-58px;left:50%;transform:translateX(-50%);padding:2px 8px;border-radius:999px;background:rgba(17,24,39,0.88);color:#fff;font:600 11px/1.2 monospace;pointer-events:none;white-space:nowrap;box-shadow:0 2px 10px rgba(0,0,0,0.18);}' +
+            '.word-rotation-menu{position:absolute;top:-80px;left:50%;transform:translateX(-50%);background:white;border:1px solid #ccc;border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,0.15);padding:8px;display:none;white-space:nowrap;z-index:10000;}' +
+            '.word-rotation-menu.show{display:block;}' +
+            '.word-rotation-option{display:block;padding:4px 8px;margin:2px 0;background:none;border:none;cursor:pointer;border-radius:2px;font-size:12px;color:#333;}' +
+            '.word-rotation-option:hover{background:#f0f0f0;}' +
+            '.word-copy-handle{position:absolute;top:-30px;left:calc(50% - 30px);transform:translateX(-50%);width:20px;height:20px;background:#6366f1;border:2px solid white;border-radius:50%;cursor:pointer;pointer-events:auto;display:flex;align-items:center;justify-content:center;color:white;font-size:10px;user-select:none;box-shadow:0 2px 4px rgba(0,0,0,0.2);}' +
+            '.word-delete-handle{position:absolute;top:-30px;left:calc(50% + 30px);transform:translateX(-50%);width:20px;height:20px;background:#ef4444;border:2px solid white;border-radius:50%;cursor:pointer;pointer-events:auto;display:flex;align-items:center;justify-content:center;color:white;font-size:10px;user-select:none;box-shadow:0 2px 4px rgba(0,0,0,0.2);}' +
+            '.word-cancel-parent-drag-handle{position:absolute;top:-30px;left:calc(50% + 50px);transform:translateX(-50%);width:20px;height:20px;background:#f97316;border:2px solid white;border-radius:50%;cursor:pointer;pointer-events:auto;display:flex;align-items:center;justify-content:center;color:white;font-size:10px;user-select:none;box-shadow:0 2px 4px rgba(0,0,0,0.2);}' +
+            /* Lock badge shown on selection handles when element is locked */
+            '.word-lock-badge{position:absolute;top:-30px;left:50%;transform:translateX(-50%);width:20px;height:20px;background:#f59e0b;border:2px solid white;border-radius:50%;pointer-events:none;display:flex;align-items:center;justify-content:center;color:white;font-size:10px;user-select:none;box-shadow:0 2px 4px rgba(0,0,0,0.2);}' +
+            '[data-image-editable],img{image-rendering:crisp-edges;image-rendering:-webkit-optimize-contrast;}' +
+            /* Locked state: applies to ALL editable types (text, image, stock) */
+            '.editor-element-locked{outline:2px solid #ef4444!important;outline-offset:2px;cursor:not-allowed!important;}' +
+            '.editor-element-locked:hover{outline-color:#dc2626!important;cursor:not-allowed!important;}' +
+            /* Parent drag enabled state */
+            '.editor-parent-drag-enabled{outline:3px solid #eab308!important;outline-offset:2px;box-shadow:0 0 0 4px rgba(234,179,8,0.2)!important;}'
+        );
+    }
 
     addStyle('editor-effect-styles',
         '@keyframes fadeIn{from{opacity:0;}to{opacity:1;}}' +
@@ -467,9 +499,9 @@
             this.currentElement = element;
             this.skipZRestoreOnDeselect = skipZBoost;
             this.originalZIndex = element.style.zIndex || '';
-            if (!skipZBoost) {
-                element.style.zIndex = String(this.TEMP_Z_INDEX);
-            }
+            // REMOVED: z-index boosting during selection to prevent ever-increasing z-index values
+            // Selection is now indicated purely by visual styles (outline, box-shadow)
+
 
             // ── FIX: Preserve animation before adding selected class ──
             try {
@@ -511,9 +543,13 @@
             if (!this.currentElement) return;
             try {
                 if (document.body.contains(this.currentElement)) {
-                    if (!this.skipZRestoreOnDeselect && this.originalZIndex !== null && this.originalZIndex !== undefined) {
+                    // ✅ MODIFIED: Don't revert z-index on deselect if we want it to stay on top
+                    // We only revert if it was a temporary boost that shouldn't persist.
+                    // But user wants it to stay "lun lớn hơn", so we keep the new z-index.
+                    if (!this.skipZRestoreOnDeselect) {
                         this.currentElement.style.zIndex = this.originalZIndex;
                     }
+
                     this.currentElement.classList.remove('selected');
                     // Clean up saved animation data
                     this.savedAnimations.delete(this.currentElement);
@@ -642,6 +678,15 @@
     // };
 
     const STORAGE_KEY = getScopedKey('html-editor-transforms');
+    const ORIGINAL_STYLE_KEY = getScopedKey('html-editor-original-styles');
+
+    const STYLE_ONLY_PROPS = [
+        'color', 'backgroundColor', 'backgroundImage', 'backgroundSize', 'backgroundPosition', 'backgroundRepeat', 'backgroundClip',
+        'fontSize', 'fontWeight', 'fontStyle', 'fontFamily', 'textAlign', 'textDecoration', 'letterSpacing', 'wordSpacing', 'lineHeight',
+        'textTransform', 'fontVariant', 'textShadow', 'borderWidth', 'borderColor', 'borderRadius', 'borderStyle', 'boxShadow',
+        'opacity', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'marginTop', 'marginRight', 'marginBottom', 'marginLeft',
+        'whiteSpace', 'wordBreak', 'overflowWrap',
+    ];
 
     const readTransformsFromSession = (key) => {
         try { return JSON.parse(sessionStorage.getItem(key) || '{}'); } catch { return {}; }
@@ -649,6 +694,67 @@
 
     const readTransformsFromStorage = (key) => {
         try { return JSON.parse(localStorage.getItem(key) || '{}'); } catch { return {}; }
+    };
+
+    const readOriginalStylesFromSession = (key) => {
+        try { return JSON.parse(sessionStorage.getItem(key) || '{}'); } catch { return {}; }
+    };
+
+    const saveOriginalStylesToSession = (id, styles) => {
+        if (!id || !styles) return;
+        try {
+            const saved = readOriginalStylesFromSession(ORIGINAL_STYLE_KEY);
+            if (!saved[id]) {
+                saved[id] = styles;
+                sessionStorage.setItem(ORIGINAL_STYLE_KEY, JSON.stringify(saved));
+                if (window.__htmlEditorScope && window.__htmlEditorScope.key) {
+                    sessionStorage.setItem('html-editor-original-styles-scope', window.__htmlEditorScope.key);
+                }
+            }
+        } catch (e) {
+            console.error('Failed to save original styles:', e);
+        }
+    };
+
+    const getOriginalStyles = (id) => id ? (readOriginalStylesFromSession(ORIGINAL_STYLE_KEY)[id] || null) : null;
+
+    const captureOriginalStyles = (el) => {
+        if (!el) return null;
+        const styles = {};
+        const computedStyle = window.getComputedStyle(el);
+        STYLE_ONLY_PROPS.forEach((prop) => {
+            const value = computedStyle.getPropertyValue(prop);
+            if (value && value !== 'none' && value !== '') {
+                styles[prop] = value;
+            }
+        });
+        return Object.keys(styles).length ? styles : null;
+    };
+
+    const ensureOriginalStyles = (id, el) => {
+        if (!id || !el) return;
+        if (!getOriginalStyles(id)) {
+            const original = captureOriginalStyles(el);
+            if (original) saveOriginalStylesToSession(id, original);
+        }
+    };
+
+    const restoreOriginalStyles = (id, el) => {
+        if (!id || !el) return false;
+        const original = getOriginalStyles(id);
+        const keys = STYLE_ONLY_PROPS;
+        if (original) {
+            keys.forEach((prop) => {
+                if (original[prop] !== undefined) {
+                    el.style[prop] = original[prop];
+                } else {
+                    el.style[prop] = '';
+                }
+            });
+            return true;
+        }
+        keys.forEach((prop) => { el.style[prop] = ''; });
+        return false;
     };
 
     const saveElementTransform = (id, transform) => {
@@ -897,6 +1003,20 @@
         return max;
     };
 
+    /**
+     * ✅ NEW: Get global scale factor (accounting for iframe zoom/scale)
+     */
+    const getGlobalScale = () => {
+        try {
+            // Measure a 100px segment in the iframe's viewport and see how many pixels it takes in the parent viewport
+            const docRect = document.documentElement.getBoundingClientRect();
+            const scale = Math.round((docRect.width / window.innerWidth) * 100) / 100;
+            return scale > 0 ? scale : 1;
+        } catch (e) {
+            return 1;
+        }
+    };
+
     const getElementsAtPosition = (x, y, excludeElement = null) => {
         try {
             const elements = document.elementsFromPoint?.(x, y) || document.msElementsFromPoint?.(x, y) || [];
@@ -1137,7 +1257,7 @@
     };
 
     // ── Editable node checks ──────────────────────────────────────────────────
-    const EDITABLE_ATTRS = ['data-editable', 'data-editor-id', 'data-image-editable', 'data-edit-map', 'data-edit-map-href'];
+    const EDITABLE_ATTRS = ['data-editable', 'data-editor-id', 'data-image-editable', 'data-edit-map', 'data-edit-map-href', 'data-history'];
     const EDITABLE_SEL = EDITABLE_ATTRS.map(a => '[' + a + ']').join(',');
 
     const isEditableNode = (el) => !!(el?.hasAttribute && EDITABLE_ATTRS.some(a => el.hasAttribute(a)));
@@ -1155,9 +1275,31 @@
     };
 
     const hasEditableChildren = (el) => !!(el?.querySelector?.(EDITABLE_SEL));
-    const isContainerOnlyEditable = (el) => isEditableNode(el) && !allowParentDragging[getEditableId(el)] && hasEditableChildren(el);
+
+    const isContainerOnlyEditable = (el) => {
+        if (!isEditableNode(el)) return false;
+        if (allowParentDragging[getEditableId(el)]) return false;
+        if (el.hasAttribute('data-action') || el.hasAttribute('data-action-id')) return false;
+        return hasEditableChildren(el);
+    };
+
+    const getActionWrapper = (target) => {
+        let cur = target;
+        for (let d = 0; d < 8 && cur && cur !== document.body && cur !== document.documentElement; d++) {
+            if (cur.hasAttribute('data-action') || cur.hasAttribute('data-action-id') || cur.tagName === 'A' || cur.getAttribute('onclick')) {
+                return cur;
+            }
+            cur = cur.parentElement;
+        }
+        return null;
+    };
 
     const resolveInteractiveEditable = (target) => {
+        const actionWrapper = getActionWrapper(target);
+        if (actionWrapper) {
+            return actionWrapper;
+        }
+
         let cur = target;
         let firstSafeAutoAssign = null;
         while (cur && cur !== document.body && cur !== document.documentElement) {
@@ -1251,17 +1393,31 @@
     /** Đồng bộ transform kéo theo toạ độ tay lưu trong dragState (dùng lại sau auto-scroll khi không có pointermove mới). */
     function syncDragPositionFromPointerClient() {
         if (!dragState || typeof dragState.lastPointerClientX !== 'number') return;
+
         // Update cached rect for accurate edge scroll
         dragState._cachedRect = dragState.el.getBoundingClientRect();
+
         const clientX = dragState.lastPointerClientX;
         const clientY = dragState.lastPointerClientY;
-        const sdx = (window.scrollX - dragState.scrollStartX) + (dragState.parentScrollAccumX || 0);
-        const sdy = (window.scrollY - dragState.scrollStartY) + (dragState.parentScrollAccumY || 0);
-        const newClientX = clientX - dragState.clickOffsetX;
-        const newClientY = clientY - dragState.clickOffsetY;
 
-        let dx = (newClientX - (dragState.startX - dragState.clickOffsetX)) + sdx;
-        let dy = (newClientY - (dragState.startY - dragState.clickOffsetY)) + sdy;
+        // ✅ FIX: Simplify displacement calculation to avoid double-counting parent scroll.
+        // We use document-relative displacement (clientX + scrollX) which covers both mouse movement and internal scroll.
+        // Parent scroll is already reflected in clientX/clientY changes relative to the iframe.
+
+        const currentDocX = clientX + window.scrollX;
+        const currentDocY = clientY + window.scrollY;
+        const initialDocX = dragState.startX + dragState.scrollStartX;
+        const initialDocY = dragState.startY + dragState.scrollStartY;
+
+        let dx = currentDocX - initialDocX;
+        let dy = currentDocY - initialDocY;
+
+        // ✅ FIX: Account for global scale (zoom). 
+        const globalScale = getGlobalScale();
+        if (globalScale !== 1 && globalScale > 0) {
+            dx = dx / globalScale;
+            dy = dy / globalScale;
+        }
 
         // Cache parent rotation — không thay đổi trong suốt drag, tính 1 lần
         if (dragState._parentRotation === undefined) {
@@ -1295,8 +1451,6 @@
         const preciseTy = Number(ty.toFixed(2));
         dragState.el.dataset.editorTx = String(preciseTx);
         dragState.el.dataset.editorTy = String(preciseTy);
-        // CSS vars — batch với transform write trên, không cần setProperty riêng
-        dragState.el.style.cssText = dragState.el.style.cssText; // no-op flush trick skipped — direct set below
         dragState.el.style.setProperty('--el-tx', preciseTx + 'px');
         dragState.el.style.setProperty('--el-ty', preciseTy + 'px');
 
@@ -1316,29 +1470,43 @@
         }
 
         // Z-index scan: mỗi 500ms để mượt mà hơn khi drag
+        // ✅ ENHANCED Z-INDEX LAYER MANAGEMENT
+        // "luôn cho phần tử mà tôi kéo vào sẽ lun lớn hơn phần mà tôi di chuyển vào"
         const nowZ = Date.now();
-        if (!dragState._lastZIndexScanAt || nowZ - dragState._lastZIndexScanAt > 500) {
+        if (!dragState._lastZIndexScanAt || nowZ - dragState._lastZIndexScanAt > 100) {
             dragState._lastZIndexScanAt = nowZ;
             const rect = dragState.el.getBoundingClientRect();
             dragState._cachedRect = rect;
-            // Chỉ check center point thay vì 5 điểm — đủ cho hầu hết trường hợp
-            const cx = rect.left + rect.width / 2;
-            const cy = rect.top + rect.height / 2;
+
+            // Check center and corners for better coverage
+            const checkPoints = [
+                { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 },
+                { x: rect.left + 5, y: rect.top + 5 },
+                { x: rect.right - 5, y: rect.bottom - 5 }
+            ];
+
             let maxZAtPosition = 0;
-            const elementsAtPos = getElementsAtPosition(cx, cy, dragState.el);
-            for (let i = 0; i < Math.min(elementsAtPos.length, 10); i++) { // Limit to 10 elements for performance
-                const el = elementsAtPos[i];
-                try {
-                    const z = parseInt(window.getComputedStyle(el).zIndex, 10);
-                    if (!isNaN(z) && z > maxZAtPosition) maxZAtPosition = z;
-                } catch { }
+            for (const pt of checkPoints) {
+                const elementsAtPos = getElementsAtPosition(pt.x, pt.y, dragState.el);
+                for (let i = 0; i < Math.min(elementsAtPos.length, 5); i++) {
+                    const el = elementsAtPos[i];
+                    try {
+                        const z = parseInt(window.getComputedStyle(el).zIndex, 10);
+                        if (!isNaN(z) && z > maxZAtPosition) maxZAtPosition = z;
+                    } catch { }
+                }
             }
+
             const currentZ = parseInt(dragState.el.style.zIndex, 10) || 0;
-            if (maxZAtPosition > currentZ) {
+            if (maxZAtPosition >= currentZ) {
                 const newZ = String(maxZAtPosition + 1);
-                dragState.el.style.zIndex = newZ; dragState.adjustedZIndex = newZ;
-            } else if (dragState.adjustedZIndex !== null && maxZAtPosition === 0) {
-                dragState.el.style.zIndex = dragState.boostedZIndex; dragState.adjustedZIndex = null;
+                dragState.el.style.zIndex = newZ;
+                dragState.el.setAttribute('data-z-index', newZ);
+                dragState.adjustedZIndex = newZ;
+
+                if (selectionManager.getSelected() === dragState.el) {
+                    selectionManager.syncStoredZIndexFromDom();
+                }
             }
         }
 
@@ -2286,7 +2454,10 @@
             overflowStack.push({ node: n, overflow: n.style.overflow, overflowX: n.style.overflowX, overflowY: n.style.overflowY });
             n.style.overflow = n.style.overflowX = n.style.overflowY = 'visible';
         };
-        let node = el;
+        // Skip setting overflow: visible on the element itself.
+        // It's only needed for ancestors to prevent clipping the element as it moves.
+        // Setting it on the element itself can break visual shapes (like circles) that rely on overflow: hidden.
+        let node = el?.parentElement;
         while (node && node !== document.body) { push(node); node = node.parentElement; }
         // Không sửa overflow của body / documentElement: template thường dùng overflow-x:hidden
         // để căn giữa canvas; ép visible ở đây làm reflow cả khung nhìn (mobile: canvas trượt
@@ -2376,6 +2547,11 @@
         if (!actions.some(a => [a.type, a.event, a.selector, a.function, a.url, a.code].join('||') === key)) actions.push(action);
     };
 
+    const isLinkAction = (action) => {
+        if (!action) return false;
+        return action.type === 'navigation' || Boolean(action.url);
+    };
+
     const getElementActions = (el, eventType) => {
         if (!el || isIgnoredActionEl(el)) return [];
         const actions = [], req = (eventType || '').toLowerCase();
@@ -2414,7 +2590,11 @@
 
     const collectAllActions = () => {
         const result = [];
-        Array.from(document.querySelectorAll('*')).forEach(n => getElementActions(n).forEach(a => pushUniqueAction(result, a)));
+        Array.from(document.querySelectorAll('*')).forEach(n =>
+            getElementActions(n).forEach(a => {
+                if (isLinkAction(a)) pushUniqueAction(result, a);
+            }),
+        );
         return result;
     };
 
@@ -2781,7 +2961,13 @@
         if (!targetInfo.id) return;
         el.classList.add('editing');
         showSelectionHandles(el);
-        applyTempHighlight(el, { outline: '3px solid #f59e0b', outlineOffset: '4px', boxShadow: '0 0 0 4px rgba(245,158,11,0.18)' }, 1200);
+        // ✅ Solid rounded highlight for layers reordering
+        applyTempHighlight(el, {
+            outline: 'none',
+            boxShadow: '0 0 0 4px #f59e0b, 0 0 20px rgba(245,158,11,0.4)',
+            borderRadius: '12px',
+            zIndex: '1000002'
+        }, 1200);
         postMsg({ type: 'FOCUS_FIELD', id: targetInfo.id, tab: targetInfo.tab, suppressActiveTab: true });
         scrollLayerPanelSelectionIntoView(el, targetInfo.id);
     };
@@ -3127,13 +3313,26 @@
         }
 
         const actionMatch = findActionMatch(raw, e.type);
+        let blockPanel = false;
         if (actionMatch?.action) {
             e.preventDefault(); e.stopPropagation();
             if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
-            applyTempHighlight(actionMatch.element || el, { outline: '2px solid #10b981', outlineOffset: '2px' }, 1000);
-            postMsg({ type: 'ACTION_DETECTED', action: actionMatch.action });
-            emitActionsSnapshot(false);
-            postMsg({ type: 'FOCUS_FIELD', id: null, tab: 'actions' }); return;
+
+            const isImg = raw.tagName === 'IMG' || raw.closest('img, [data-image-editable]') || actionMatch.element?.querySelector('img, [data-image-editable]');
+            const isLink = actionMatch.action.type === 'navigation' || actionMatch.action.url || actionMatch.element?.tagName === 'A';
+
+            if (!isImg && isLink) {
+                applyTempHighlight(actionMatch.element || el, {
+                    outline: 'none',
+                    boxShadow: '0 0 0 3px #10b981, 0 0 15px rgba(16,185,129,0.3)',
+                    borderRadius: '8px',
+                    zIndex: '1000002'
+                }, 1000);
+                postMsg({ type: 'ACTION_DETECTED', action: actionMatch.action });
+                emitActionsSnapshot(false);
+            } else {
+                blockPanel = true;
+            }
         }
 
         if (isHandleTarget(e.target)) { e.preventDefault(); e.stopPropagation(); return; }
@@ -3142,6 +3341,14 @@
         let imageId = el.getAttribute('data-image-editable');
         const mapId = el.getAttribute('data-edit-map') || el.getAttribute('data-edit-map-href');
         if (!imageId && ['IMG', 'PICTURE', 'IMAGE'].includes(el.tagName) && fieldId) { imageId = fieldId; fieldId = null; }
+
+        if (!imageId && (el.hasAttribute('data-action') || el.hasAttribute('data-action-id'))) {
+            const imgChild = el.querySelector('img[data-image-editable]');
+            if (imgChild) {
+                imageId = imgChild.getAttribute('data-image-editable');
+                fieldId = null;
+            }
+        }
 
         if (currentSelectedImage === el && (fieldId || imageId || mapId)) {
             // ✅ FIX: Allow double-click to enable contentEditable even when element is already selected
@@ -3205,8 +3412,61 @@
                     console.log('[Text Editing] Double-click detected but element is locked or not dblclick event');
                 } else if (e.type === 'click') {
                     console.log('[Text Editing] Single click on text element:', fieldId);
+                    // Enable contentEditable and place cursor at click position
+                    // ✅ FIX: Save animation before enabling contentEditable
+                    const savedAnimation = el.style.animation || '';
+                    const savedAnimationPlayState = el.style.animationPlayState || '';
+                    el.contentEditable = 'true';
+                    // ✅ FIX: Restore animation after enabling contentEditable
+                    if (savedAnimation) {
+                        el.style.animation = savedAnimation;
+                        el.style.animationPlayState = savedAnimationPlayState || 'running';
+                        console.log('[Text Editing] Animation preserved:', savedAnimation);
+                    }
+                    el.focus();
+                    // Place cursor at click position
+                    if (window.getSelection) {
+                        const selection = window.getSelection();
+                        if (document.caretPositionFromPoint) {
+                            const caretPos = document.caretPositionFromPoint(e.clientX, e.clientY);
+                            if (caretPos) {
+                                const range = document.createRange();
+                                range.setStart(caretPos.offsetNode, caretPos.offset);
+                                range.collapse(true);
+                                selection.removeAllRanges();
+                                selection.addRange(range);
+                            } else {
+                                // fallback: place at the end
+                                const range = document.createRange();
+                                range.selectNodeContents(el);
+                                range.collapse(false);
+                                selection.removeAllRanges();
+                                selection.addRange(range);
+                            }
+                        } else if (document.caretRangeFromPoint) {
+                            const range = document.caretRangeFromPoint(e.clientX, e.clientY);
+                            if (range) {
+                                selection.removeAllRanges();
+                                selection.addRange(range);
+                            } else {
+                                // fallback
+                                const range = document.createRange();
+                                range.selectNodeContents(el);
+                                range.collapse(false);
+                                selection.removeAllRanges();
+                                selection.addRange(range);
+                            }
+                        } else {
+                            // fallback: place at the end
+                            const range = document.createRange();
+                            range.selectNodeContents(el);
+                            range.collapse(false);
+                            selection.removeAllRanges();
+                            selection.addRange(range);
+                        }
+                    }
                 }
-                postMsg({ type: 'FOCUS_FIELD', id: fieldId, tab: 'info' });
+                if (!blockPanel) postMsg({ type: 'FOCUS_FIELD', id: fieldId, tab: 'info' });
             } else if (imageId) {
                 e.preventDefault(); el.classList.add('editing'); showSelectionHandles(el);
                 if (e.type === 'dblclick' && !isElementLocked(el)) postMsg({ type: 'ENTER_ROTATE_MODE', id: imageId });
@@ -3298,19 +3558,19 @@
 
         // ✅ FIX: "Drag phải move container crop"
         // Nếu mục tiêu là IMG nằm trong một DIV wrapper, di chuyển DIV đó để giữ nguyên mask/frame
-        if (el.tagName === 'IMG' && el.parentElement && el.parentElement.tagName === 'DIV') {
-            const parent = el.parentElement;
-            const pc = window.getComputedStyle(parent);
-            // Nếu parent có overflow hidden hoặc border radius, nó chính là Frame/Mask
-            const isFrame = pc.overflow === 'hidden' || pc.borderRadius !== '0px' || pc.clipPath !== 'none';
+        // if (el.tagName === 'IMG' && el.parentElement && el.parentElement.tagName === 'DIV') {
+        //     const parent = el.parentElement;
+        //     const pc = window.getComputedStyle(parent);
+        //     // Nếu parent có overflow hidden hoặc border radius, nó chính là Frame/Mask
+        //     const isFrame = pc.overflow === 'hidden' || pc.borderRadius !== '0px' || pc.clipPath !== 'none';
 
-            if (isFrame) {
-                console.log('[Drag] Unified block drag: moving parent DIV instead of inner IMG');
-                el = parent;
-                el.style.overflow = 'hidden'; // Cưỡng bức clipping
-                if (pc.position === 'static') el.style.position = 'relative';
-            }
-        }
+        //     if (isFrame) {
+        //         console.log('[Drag] Unified block drag: moving parent DIV instead of inner IMG');
+        //         el = parent;
+        //         el.style.overflow = 'hidden'; // Cưỡng bức clipping
+        //         if (pc.position === 'static') el.style.position = 'relative';
+        //     }
+        // }
 
         if (e.detail === 2) {
             console.log('[Drag] Blocked: double-click detected');
@@ -3328,13 +3588,10 @@
         }
 
         // ── BACKGROUND IMAGE CHECK: prevent dragging background images ──────
-        if (el.dataset.imageEditable === 'body-background') {
-            console.log('[Drag] Blocked: body background');
-            e.preventDefault();
-            selectionManager.select(el);
-            // Show selection handles so user can edit/crop the background
-            showSelectionHandles(el);
-            return;
+        // Cho phép di chuyển background nếu người dùng chủ động tương tác
+        const isBackground = el.dataset.imageEditable === 'body-background';
+        if (isBackground) {
+            console.log('[Drag] Starting background movement');
         }
 
         // ── SIZE CHECK: prevent dragging elements that are too large ──────
@@ -3348,9 +3605,9 @@
 
         // For images, use stricter threshold (background-like images)
         const isImage = el.dataset.imageEditable || el.tagName === 'IMG';
-        const threshold = isImage ? 50 : 80;
+        const threshold = (isImage && !isBackground) ? 50 : 95;
 
-        const isTooLarge = widthPercent > threshold && heightPercent > threshold;
+        const isTooLarge = widthPercent > threshold && heightPercent > threshold && !el.hasAttribute('data-history');
 
         if (isTooLarge) {
             console.log('[Drag Block] Element too large to drag:', {
@@ -3388,11 +3645,10 @@
 
         const inlineTags = ['SPAN', 'EM', 'STRONG', 'B', 'I', 'SMALL', 'A'];
         if (inlineTags.includes(el.tagName) && window.getComputedStyle(el).display === 'inline') el.style.display = 'inline-block';
-
         // ✅ Đảm bảo lấy ID từ chính nó hoặc con trực tiếp (trường hợp ta vừa chuyển el lên parent)
         let eid = el.dataset.editable || el.dataset.editorId || el.dataset.imageEditable || el.dataset.editMap || el.dataset.editMapHref;
-        if (!eid && el.tagName === 'DIV') {
-            const childWithId = el.querySelector('[data-editable],[data-image-editable],[data-editor-id]');
+        if (!eid) {
+            const childWithId = el.querySelector('[data-editable],[data-image-editable],[data-editor-id],[data-edit-map],[data-edit-map-href]');
             if (childWithId) {
                 eid = getEditableId(childWithId);
             }
@@ -3412,10 +3668,10 @@
             window.innerHeight || 0
         );
         const absTop = rect.top + window.scrollY, absLeft = rect.left + window.scrollX;
-        const boostedZ = String(Math.max(getHighestZIndex(0) + 1, 999999));
+        const boostedZ = String(getHighestZIndex(0) + 1);
 
         // Check if element has actions (allow dragging outside viewport)
-        const hasActions = el.getAttribute('data-action-id') || el.onclick || el.getAttribute('onclick') || el.getAttribute('action');
+        const hasActions = el.getAttribute('data-action-id') || el.onclick || el.getAttribute('onclick') || el.getAttribute('action') || el.tagName === 'A' || !!findActionMatch(el, 'click');
 
         cancelEdgeScrollRaf();
         dragState = {
@@ -3492,7 +3748,7 @@
         const rotation = rotM ? parseFloat(rotM[1]) : 0;
         const finalZIndex = dragState.adjustedZIndex !== null
             ? parseInt(dragState.adjustedZIndex, 10)
-            : parseInt(dragState.boostedZIndex, 10) || 999999;
+            : parseInt(dragState.boostedZIndex, 10);
         postMsg({ type: 'HTML_DRAG_CHANGE', id: dragState.id, tx: toNum(dragState.el.dataset.editorTx), ty: toNum(dragState.el.dataset.editorTy), rotation, transform: dragState.el.style.transform || finalT, zIndex: finalZIndex });
         if (dragState.id) saveElementTransform(dragState.id, dragState.el.style.transform || finalT);
 
@@ -3541,106 +3797,140 @@
         if (isGalleryLightboxControlTarget(e.target)) return;
         const m = findActionMatch(e.target, e.type);
         if (!m?.action) return;
+
+        // Block all action executions and modal triggers
         e.preventDefault(); e.stopPropagation();
         if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
-        applyTempHighlight(m.element || e.target, { outline: '2px solid #10b981', outlineOffset: '2px' }, 1000);
-        postMsg({ type: 'ACTION_DETECTED', action: m.action });
-        postMsg({ type: 'FOCUS_FIELD', id: null, tab: 'actions' });
-        emitActionsSnapshot(false);
+
+        // Check if target element is/contains an image, or is wrapped in an image interaction
+        const isImg = e.target.tagName === 'IMG' || e.target.closest('img, [data-image-editable]') || m.element?.querySelector('img, [data-image-editable]');
+
+        if (isImg) {
+            // For images: only allow changing image and moving.
+            // Do NOT open HtmlActionsPanel, do NOT show modal.
+            // Manually call handleInteraction so the editor can select/interact with the image.
+            handleInteraction(e);
+            return;
+        }
+
+        // For links: open HtmlActionsPanel
+        const isLink = m.action.type === 'navigation' || m.action.url || m.element?.tagName === 'A';
+        if (isLink) {
+            // ✅ Solid rounded highlight for action detection
+            applyTempHighlight(m.element || e.target, {
+                outline: 'none',
+                boxShadow: '0 0 0 3px #10b981, 0 0 15px rgba(16,185,129,0.3)',
+                borderRadius: '8px',
+                zIndex: '1000002'
+            }, 1000);
+            postMsg({ type: 'ACTION_DETECTED', action: m.action });
+            postMsg({ type: 'FOCUS_FIELD', id: null, tab: 'actions' });
+            emitActionsSnapshot(false);
+        } else {
+            // Non-link actions: block but do not open HtmlActionsPanel.
+            // Allow selection/dragging by passing to handleInteraction.
+            handleInteraction(e);
+        }
     };
 
     // ── Event listeners ───────────────────────────────────────────────────────
-    console.log('[HTML Editor Runtime] Attaching event listeners...');
-    document.body.addEventListener('click', handleInteraction);
-    document.body.addEventListener('dblclick', handleInteraction);
-    document.body.addEventListener('focusout', handleInteraction);
-    document.addEventListener('focusin', (e) => {
-        const el = e.target;
-        if (el && el.isContentEditable) {
-            el.__beforeState = window.editorStateManager?.captureElementState(el);
-        }
-    });
-    document.body.addEventListener('pointerdown', handleDragPointerDown);
-    document.addEventListener('click', handleActionCapture, true);
-    document.addEventListener('change', handleActionCapture, true);
-    document.addEventListener('input', handleActionCapture, true);
-    document.addEventListener('submit', handleActionCapture, true);
-    document.body.addEventListener('contextmenu', handleContextMenu);
-    document.addEventListener('click', (e) => {
-        const musicToggle = e.target?.closest?.('#musicToggle, #music-toggle, .music-btn');
-        if (!musicToggle) return;
-        // Music playback in editor must be controlled by MusicTimeline only.
-        e.preventDefault();
-        e.stopPropagation();
-        const bgMusic = document.getElementById('bgMusic') || document.getElementById('background-music');
-        if (bgMusic) bgMusic.pause();
-        musicToggle.classList.remove('playing');
-        document.querySelector('.music-icon')?.classList.remove('is-playing');
-    }, true);
-    document.addEventListener('pointermove', handleDragPointerMove, { passive: false });
-    document.addEventListener('pointerup', handleDragPointerUp);
-    document.addEventListener('pointercancel', handleDragPointerUp);
+    // PREVIEW GUARD: Skip ALL editor interaction listeners when in preview mode.
+    // This prevents selection, dragging, text editing, context menu, and drop
+    // while keeping the page fully rendered and scrollable.
+    if (!window.__isPreviewMode) {
+        console.log('[HTML Editor Runtime] Attaching event listeners...');
+        document.body.addEventListener('click', handleInteraction);
+        document.body.addEventListener('dblclick', handleInteraction);
+        document.body.addEventListener('focusout', handleInteraction);
+        document.addEventListener('focusin', (e) => {
+            const el = e.target;
+            if (el && el.isContentEditable) {
+                el.__beforeState = window.editorStateManager?.captureElementState(el);
+            }
+        });
+        document.body.addEventListener('pointerdown', handleDragPointerDown);
+        document.addEventListener('click', handleActionCapture, true);
+        document.addEventListener('change', handleActionCapture, true);
+        document.addEventListener('input', handleActionCapture, true);
+        document.addEventListener('submit', handleActionCapture, true);
+        document.body.addEventListener('contextmenu', handleContextMenu);
+        document.addEventListener('click', (e) => {
+            const musicToggle = e.target?.closest?.('#musicToggle, #music-toggle, .music-btn');
+            if (!musicToggle) return;
+            // Music playback in editor must be controlled by MusicTimeline only.
+            e.preventDefault();
+            e.stopPropagation();
+            const bgMusic = document.getElementById('bgMusic') || document.getElementById('background-music');
+            if (bgMusic) bgMusic.pause();
+            musicToggle.classList.remove('playing');
+            document.querySelector('.music-icon')?.classList.remove('is-playing');
+        }, true);
+        document.addEventListener('pointermove', handleDragPointerMove, { passive: false });
+        document.addEventListener('pointerup', handleDragPointerUp);
+        document.addEventListener('pointercancel', handleDragPointerUp);
 
-    // ── FIX: Ctrl+A Selection Scoping ────────────────────────────────────────
-    document.addEventListener('keydown', (e) => {
-        // Check if Ctrl+A or Cmd+A is pressed
-        if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
-            const activeEl = document.activeElement;
-            // Only scope if we're in a contentEditable element
-            if (activeEl && activeEl.contentEditable === 'true') {
-                console.log('[Ctrl+A Scoping] Scoping selection to element:', activeEl);
-                e.preventDefault();
-                try {
-                    // Select all content within the current element only
-                    const range = document.createRange();
-                    range.selectNodeContents(activeEl);
-                    const selection = window.getSelection();
-                    selection.removeAllRanges();
-                    selection.addRange(range);
-                } catch (err) {
-                    console.warn('[Ctrl+A Scoping] Failed to scope selection:', err);
+        // ── FIX: Ctrl+A Selection Scoping ────────────────────────────────────────
+        document.addEventListener('keydown', (e) => {
+            // Check if Ctrl+A or Cmd+A is pressed
+            if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+                const activeEl = document.activeElement;
+                // Only scope if we're in a contentEditable element
+                if (activeEl && activeEl.contentEditable === 'true') {
+                    console.log('[Ctrl+A Scoping] Scoping selection to element:', activeEl);
+                    e.preventDefault();
+                    try {
+                        // Select all content within the current element only
+                        const range = document.createRange();
+                        range.selectNodeContents(activeEl);
+                        const selection = window.getSelection();
+                        selection.removeAllRanges();
+                        selection.addRange(range);
+                    } catch (err) {
+                        console.warn('[Ctrl+A Scoping] Failed to scope selection:', err);
+                    }
                 }
             }
-        }
-    });
+        });
 
-    console.log('[HTML Editor Runtime] Event listeners attached successfully');
+        console.log('[HTML Editor Runtime] Event listeners attached successfully');
 
-    window.addEventListener('scroll', () => { if (currentSelectedImage && selectionHandles) showSelectionHandles(currentSelectedImage); });
-    window.addEventListener('resize', () => { if (currentSelectedImage && selectionHandles) showSelectionHandles(currentSelectedImage); });
+        window.addEventListener('scroll', () => { if (currentSelectedImage && selectionHandles) showSelectionHandles(currentSelectedImage); });
+        window.addEventListener('resize', () => { if (currentSelectedImage && selectionHandles) showSelectionHandles(currentSelectedImage); });
 
-    document.addEventListener('dragover', (e) => {
-        if (e.dataTransfer?.types && Array.from(e.dataTransfer.types).includes('application/x-hiweb-image')) e.preventDefault();
-    });
+        document.addEventListener('dragover', (e) => {
+            if (e.dataTransfer?.types && Array.from(e.dataTransfer.types).includes('application/x-hiweb-image')) e.preventDefault();
+        });
 
-    document.addEventListener('drop', (e) => {
-        const raw = e.dataTransfer ? (e.dataTransfer.getData('application/x-hiweb-image') || e.dataTransfer.getData('text/plain') || '') : '';
-        if (!raw) return;
-        let url = raw, rotation = 0, scale = 1;
-        try { const p = JSON.parse(raw); if (p?.url) { url = p.url; rotation = p.rotation || 0; scale = p.scale || 1; } } catch { }
-        if (!url) return;
-        const t = e.target.closest('[data-image-editable],img[data-editable],img[data-image-editable]');
-        if (!t) return;
-        e.preventDefault();
-        const id = t.getAttribute('data-image-editable') || t.getAttribute('data-editable') || '';
-        if (!id) return;
-        // Guard: don't allow drop onto locked elements
-        if (isElementLocked(t)) return;
-        if (t.tagName === 'IMG') {
-            t.setAttribute('src', url);
-            if (rotation > 0 || scale !== 1) {
-                const nt = (t.style.transform || '').replace(/rotate\([^)]*\)/g, '').replace(/scale\([^)]*\)/g, '').trim();
-                const parts = [];
-                if (rotation > 0) parts.push('rotate(' + rotation + 'deg)');
-                if (scale !== 1) parts.push('scale(' + scale + ')');
-                t.style.transform = (nt + ' ' + parts.join(' ')).trim();
+        document.addEventListener('drop', (e) => {
+            const raw = e.dataTransfer ? (e.dataTransfer.getData('application/x-hiweb-image') || e.dataTransfer.getData('text/plain') || '') : '';
+            if (!raw) return;
+            let url = raw, rotation = 0, scale = 1;
+            try { const p = JSON.parse(raw); if (p?.url) { url = p.url; rotation = p.rotation || 0; scale = p.scale || 1; } } catch { }
+            if (!url) return;
+            const t = e.target.closest('[data-image-editable],img[data-editable],img[data-image-editable]');
+            if (!t) return;
+            e.preventDefault();
+            const id = t.getAttribute('data-image-editable') || t.getAttribute('data-editable') || '';
+            if (!id) return;
+            // Guard: don't allow drop onto locked elements
+            if (isElementLocked(t)) return;
+            if (t.tagName === 'IMG') {
+                t.setAttribute('src', url);
+                if (rotation > 0 || scale !== 1) {
+                    const nt = (t.style.transform || '').replace(/rotate\([^)]*\)/g, '').replace(/scale\([^)]*\)/g, '').trim();
+                    const parts = [];
+                    if (rotation > 0) parts.push('rotate(' + rotation + 'deg)');
+                    if (scale !== 1) parts.push('scale(' + scale + ')');
+                    t.style.transform = (nt + ' ' + parts.join(' ')).trim();
+                }
+            } else {
+                t.style.backgroundImage = "url('" + url + "')"; t.style.backgroundSize = 'cover'; t.style.backgroundPosition = 'center';
+                if (rotation > 0) { const nt = (t.style.transform || '').replace(/rotate\([^)]*\)/g, '').trim(); t.style.transform = (nt + ' rotate(' + rotation + 'deg)').trim(); }
             }
-        } else {
-            t.style.backgroundImage = "url('" + url + "')"; t.style.backgroundSize = 'cover'; t.style.backgroundPosition = 'center';
-            if (rotation > 0) { const nt = (t.style.transform || '').replace(/rotate\([^)]*\)/g, '').trim(); t.style.transform = (nt + ' rotate(' + rotation + 'deg)').trim(); }
-        }
-        postMsg({ type: 'HTML_IMAGE_DROPPED', id, value: url, rotation });
-    });
+            postMsg({ type: 'HTML_IMAGE_DROPPED', id, value: url, rotation });
+        });
+
+    } // end if (!window.__isPreviewMode) — PREVIEW GUARD
 
     // ── Fall effect manager ───────────────────────────────────────────────────
     let fallManagerLoading = false;
@@ -3715,6 +4005,7 @@
     window.addEventListener('message', (e) => {
         const data = e.data || {};
         if (!data.__html_editor) return;
+        if (window.__isPreviewMode) return;
 
         if (data.type === 'PARENT_SCROLL_DELTA') {
             const d = Number(data.dy);
@@ -3726,8 +4017,39 @@
             return;
         }
 
+        if (data.type === 'UPDATE_SCOPE') {
+            if (data.scope && data.scope.key) {
+                window.__htmlEditorScope = data.scope;
+                console.log('[Scope] updated to', data.scope.key);
+                if (window.editorStateManager) {
+                    try {
+                        const state = window.editorStateManager.loadFromLocalStorage(data.scope);
+                        if (state) {
+                            window.editorStateManager.applyState(state);
+                            console.log('[Scope] loaded saved state for scope:', data.scope.key);
+                        }
+                    } catch (e) {
+                        console.warn('[Scope] failed to load state for new scope:', e);
+                    }
+                }
+            }
+            return;
+        }
+
         if (data.type === 'HTML_CTX_ACTION') {
             const { action: ctxAction, id: ctxId } = data;
+            if (ctxAction === 'commit_layer_stack') {
+                console.log('[HTML_CTX_ACTION] commit_layer_stack');
+                if (window.editorStateManager) {
+                    try {
+                        window.editorStateManager.saveState();
+                    } catch (err) {
+                        console.warn('[commit_layer_stack] saveState failed:', err);
+                    }
+                }
+                postMsg({ type: 'LAYER_STACK_COMMITTED' });
+                return;
+            }
             if (ctxAction === 'delete' && ctxId) {
                 showConfirmModal({
                     title: 'Xóa phần tử', message: 'Bạn có chắc muốn xóa phần tử này?', confirmText: 'Xóa', cancelText: 'Hủy',
@@ -3785,38 +4107,34 @@
             } else if (ctxAction === 'get_image_src' && ctxId) {
                 handleGetImageSrc(ctxId);
             } else if (ctxAction === 'copy_style' && ctxId) {
-                // Copy inline styles from the element
                 const dom = findEditableById(ctxId);
                 if (dom) {
+                    ensureOriginalStyles(ctxId, dom);
                     const styles = {};
                     const computedStyle = window.getComputedStyle(dom);
-                    // Copy important style properties including font family
-                    const styleProps = [
-                        'color', 'backgroundColor', 'fontSize', 'fontWeight', 'fontStyle', 'fontFamily',
-                        'textAlign', 'textDecoration', 'letterSpacing', 'wordSpacing', 'lineHeight',
-                        'borderWidth', 'borderColor', 'borderRadius', 'borderStyle',
-                        'padding', 'margin', 'opacity', 'textShadow', 'boxShadow',
-                        'fontVariant', 'textTransform', 'whiteSpace', 'wordBreak', 'overflowWrap'
-                    ];
-                    styleProps.forEach(prop => {
+                    STYLE_ONLY_PROPS.forEach((prop) => {
                         const value = computedStyle.getPropertyValue(prop);
                         if (value && value !== 'none' && value !== '') {
                             styles[prop] = value;
                         }
                     });
-                    // Also copy inline font-family if set directly
                     if (dom.style.fontFamily) {
                         styles.fontFamily = dom.style.fontFamily;
                     }
-                    // Send styles back to host
                     parent.postMessage({ __html_editor: true, type: 'STYLE_COPIED', styles }, '*');
                 }
             } else if (ctxAction === 'paste_style' && ctxId && data.styles) {
-                // Paste styles onto the element
                 const dom = findEditableById(ctxId);
                 if (dom) {
-                    const styles = data.styles;
-                    Object.keys(styles).forEach(prop => {
+                    ensureOriginalStyles(ctxId, dom);
+                    const beforeState = window.editorStateManager?.captureElementState(dom);
+                    const styles = {};
+                    Object.keys(data.styles).forEach((prop) => {
+                        if (STYLE_ONLY_PROPS.includes(prop)) {
+                            styles[prop] = data.styles[prop];
+                        }
+                    });
+                    Object.keys(styles).forEach((prop) => {
                         try {
                             dom.style[prop] = styles[prop];
                         } catch (err) {
@@ -3824,6 +4142,59 @@
                         }
                     });
                     postMsg({ type: 'HTML_STYLE_UPDATED', id: ctxId, style: styles });
+
+                    const afterState = window.editorStateManager?.captureElementState(dom);
+                    postMsg({
+                        type: 'COMMIT_COMMAND',
+                        command: {
+                            type: 'PASTE_STYLE',
+                            elementId: ctxId,
+                            before: beforeState,
+                            after: afterState
+                        }
+                    });
+                }
+            } else if (ctxAction === 'reset_style' && ctxId) {
+                const dom = findEditableById(ctxId);
+                if (dom) {
+                    const beforeState = window.editorStateManager?.captureElementState(dom);
+                    restoreOriginalStyles(ctxId, dom);
+                    const afterState = window.editorStateManager?.captureElementState(dom);
+                    postMsg({
+                        type: 'COMMIT_COMMAND',
+                        command: {
+                            type: 'RESET_STYLE',
+                            elementId: ctxId,
+                            before: beforeState,
+                            after: afterState
+                        }
+                    });
+                    if (currentSelectedImage === dom) updateHandlesRect(dom);
+                }
+            } else if (ctxAction === 'reset_position' && ctxId) {
+                const dom = findEditableById(ctxId);
+                if (dom) {
+                    const beforeState = window.editorStateManager?.captureElementState(dom);
+                    dom.style.transform = '';
+                    dom.style.left = '';
+                    dom.style.top = '';
+                    dom.style.right = '';
+                    dom.style.bottom = '';
+                    dom.style.position = '';
+                    dom.dataset.editorTx = '0';
+                    dom.dataset.editorTy = '0';
+                    saveElementTransform(ctxId, '');
+                    const afterState = window.editorStateManager?.captureElementState(dom);
+                    postMsg({
+                        type: 'COMMIT_COMMAND',
+                        command: {
+                            type: 'RESET_POSITION',
+                            elementId: ctxId,
+                            before: beforeState,
+                            after: afterState
+                        }
+                    });
+                    if (currentSelectedImage === dom) updateHandlesRect(dom);
                 }
             }
             return;
@@ -3863,6 +4234,11 @@
         if (data.type === 'SAVE_REQUEST') {
             let success = false;
             try {
+                const scope = data.scope || { key: 'default' };
+                if (scope.key) {
+                    window.__htmlEditorScope = scope;
+                }
+
                 // First, transfer sessionStorage transforms to localStorage
                 const sessionTransforms = readTransformsFromSession(STORAGE_KEY);
                 if (Object.keys(sessionTransforms).length > 0) {
@@ -3875,7 +4251,6 @@
 
                 // Use EditorStateManager if available (new method)
                 if (window.editorStateManager) {
-                    const scope = data.scope || { key: 'default' };
                     success = window.editorStateManager.saveToLocalStorage(scope);
                     console.log('[Save] EditorStateManager saved state to localStorage');
                 } else {
@@ -3962,6 +4337,7 @@
         }
 
         if (data.type === 'ADD_EDITABLE_FIELD' && data.id) {
+            const beforeState = window.editorStateManager?.captureCurrentState();
             const span = document.createElement('span');
             span.setAttribute('data-editable', data.id);
             span.setAttribute('data-editor-id', data.id); // Also set editor-id for better tracking
@@ -4013,6 +4389,17 @@
             }
             before ? parent.insertBefore(span, before) : parent.appendChild(span);
             saveTextContentToStorage(false); // Lưu văn bản mới thêm vào session
+
+            const afterState = window.editorStateManager?.captureCurrentState();
+            postMsg({
+                type: 'COMMIT_COMMAND',
+                command: {
+                    type: 'ADD',
+                    elementId: data.id,
+                    before: beforeState,
+                    after: afterState
+                }
+            });
             setTimeout(() => {
                 postMsg({ type: 'HTML_STYLE_UPDATED', id: data.id, style: { fontFamily: span.style.fontFamily, fontSize: span.style.fontSize, fontWeight: span.style.fontWeight, fontStyle: span.style.fontStyle, lineHeight: span.style.lineHeight, color: span.style.color, textAlign: span.style.textAlign, textDecoration: span.style.textDecoration, letterSpacing: span.style.letterSpacing, wordSpacing: span.style.wordSpacing, textTransform: span.style.textTransform, fontVariant: span.style.fontVariant, textShadow: span.style.textShadow, whiteSpace: span.style.whiteSpace, wordBreak: span.style.wordBreak, overflowWrap: span.style.overflowWrap, zIndex: span.style.zIndex } });
                 span.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
@@ -4020,6 +4407,7 @@
         }
 
         if (data.type === 'ADD_EDITABLE_IMAGE' && data.id) {
+            const beforeState = window.editorStateManager?.captureCurrentState();
             const img = document.createElement('img');
             img.setAttribute('data-image-editable', data.id);
             img.setAttribute('src', data.value || ''); img.setAttribute('alt', data.id);
@@ -4050,6 +4438,17 @@
             }
             before ? parent.insertBefore(img, before) : parent.appendChild(img);
 
+            const afterState = window.editorStateManager?.captureCurrentState();
+            postMsg({
+                type: 'COMMIT_COMMAND',
+                command: {
+                    type: 'ADD_IMAGE',
+                    elementId: data.id,
+                    before: beforeState,
+                    after: afterState
+                }
+            });
+
             // ✅ FIX: Ensure newly added image is draggable
             // Force pointer-events and cursor after insertion
             setTimeout(() => {
@@ -4071,13 +4470,13 @@
 
         if (data.type === 'SET_HTML_IMAGE_STYLE' && data.id) {
             queryEditableAll(data.id).forEach(el => {
-                // ✅ FIX: Đảm bảo Container luôn có các thuộc tính bắt buộc để clip nội dung
-                if (el.tagName !== 'IMG') {
-                    el.style.overflow = 'hidden';
-                    if (window.getComputedStyle(el).position === 'static') {
-                        el.style.position = 'relative';
-                    }
-                }
+                // FIX: Đảm bảo Container luôn có các thuộc tính bắt buộc để clip nội dung
+                // if (el.tagName !== 'IMG') {
+                //     el.style.overflow = 'hidden';
+                //     if (window.getComputedStyle(el).position === 'static') {
+                //         el.style.position = 'relative';
+                //     }
+                // }
 
                 const s = data.style;
                 if (s.borderRadius !== undefined) el.style.borderRadius = s.borderRadius;
@@ -4145,6 +4544,10 @@
                     }
                 }
                 applyTransformFromStyle(el, s, data.id);
+                // ✅ Update snapshot if the modified element is currently selected
+                if (currentSelectedImage === el) {
+                    el.__editorIdentitySnapshot = snapshotElementIdentity(el);
+                }
 
                 // ✅ FIX: Ensure element remains draggable after style changes
                 // Force pointer-events and cursor to ensure drag still works
@@ -4159,8 +4562,7 @@
             queryEditableAll(data.id).forEach(el => {
                 const s = data.style;
                 // ✅ Added backgroundColor and background to the list of supported properties
-                ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'color', 'backgroundColor', 'background', 'letterSpacing', 'wordSpacing', 'textAlign', 'textDecoration', 'textShadow', 'lineHeight', 'borderWidth', 'borderColor', 'borderRadius'].forEach(p => { if (s[p]) el.style[p] = s[p]; });
-                if (s.borderWidth || s.borderColor) el.style.borderStyle = 'solid';
+                ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'color', 'backgroundColor', 'background', 'letterSpacing', 'wordSpacing', 'textAlign', 'textDecoration', 'textShadow', 'lineHeight', 'borderWidth', 'borderColor', 'borderRadius', 'borderStyle'].forEach(p => { if (s[p]) el.style[p] = s[p]; });
                 if (s.href && el.tagName === 'A') el.href = s.href;
                 const hasAnimationField = Object.prototype.hasOwnProperty.call(s, 'animation');
                 const shouldClearAnimation =
@@ -4180,6 +4582,10 @@
                     if (hasAnimationField && s.animation) { el.style.animation = 'none'; void el.offsetHeight; el.style.animation = s.animation; }
                 }
                 applyTransformFromStyle(el, s, data.id);
+                // ✅ Update snapshot if the modified element is currently selected
+                if (currentSelectedImage === el) {
+                    el.__editorIdentitySnapshot = snapshotElementIdentity(el);
+                }
             });
             postMsg({ type: 'HTML_STYLE_UPDATED', id: data.id, style: data.style });
         }
@@ -4324,6 +4730,14 @@
             }
         }
 
+        if (data.type === 'HIGHLIGHT_ELEMENT' && data.id) {
+            const el = findEditableById(data.id);
+            if (el) {
+                // ✅ Strictly temporary highlight (3s), no permanent selection handles
+                applyTempHighlight(el, data.style, data.duration || 3000);
+            }
+        }
+
         if (data.type === 'GET_SCROLL_POSITION' && data.messageId) {
             postMsg({ type: 'SCROLL_POSITION_RESPONSE', messageId: data.messageId, scrollPosition: window.pageYOffset || 0 });
         }
@@ -4345,7 +4759,13 @@
                     } catch { target2.onclick?.(); }
                 } else if (act.type === 'navigation' && act.url) window.open(act.url, '_blank');
                 postMsg({ type: 'ACTION_EXECUTED', action: act, success: true });
-                applyTempHighlight(target2, { outline: '3px solid #10b981', outlineOffset: '4px', boxShadow: '0 0 0 4px rgba(16,185,129,0.2)' }, 2000);
+                // ✅ Solid rounded highlight for action execution
+                applyTempHighlight(target2, {
+                    outline: 'none',
+                    boxShadow: '0 0 0 4px #10b981, 0 0 20px rgba(16,185,129,0.4)',
+                    borderRadius: '12px',
+                    zIndex: '1000002'
+                }, 2000);
             } else postMsg({ type: 'ACTION_EXECUTED', action: act, success: false, error: 'Element not found' });
         }
 
@@ -4531,7 +4951,7 @@
             const state = window.editorStateManager.loadFromLocalStorage(window.__htmlEditorScope);
             if (state) {
                 console.log('[Init] Found saved state, applying...');
-                window.editorStateManager.applyState(state);
+                window.editorStateManager.applyState(state, true);
                 console.log('[Init] State applied successfully');
             } else {
                 console.log('[Init] No saved state found for this scope, using clean template');
@@ -4555,13 +4975,28 @@
         const data = event.data;
         if (!data || data.__html_editor !== true) return;
 
+        if (data.type === 'UPDATE_SCOPE') {
+            window.__htmlEditorScope = data.scope;
+            syncScopeToLocalStorage(data.scope);
+            return;
+        }
+
         if (data.type === 'APPLY_COMMAND') {
             const cmd = data.command;
             if (!cmd) return;
 
             const stateToApply = data.direction === 'undo' ? cmd.before : cmd.after;
             if (stateToApply && window.editorStateManager) {
-                if (cmd.elementId) {
+                // Structural changes MUST use applyState even if elementId is present
+                const isStructural = ['CANVAS_SNAPSHOT', 'DELETE', 'DUPLICATE', 'ADD', 'ADD_IMAGE'].includes(cmd.type);
+
+                if (isStructural) {
+                    // Full structural restore from snapshot
+                    window.editorStateManager.applyState(stateToApply);
+
+                    // Clear selection handles after full restore
+                    hideSelectionHandles();
+                } else if (cmd.elementId) {
                     const el = findEditableById(cmd.elementId);
                     if (el) {
                         window.editorStateManager.applyElementState(el, stateToApply);
@@ -4572,12 +5007,6 @@
                             showSelectionHandles(el);
                         }
                     }
-                } else if (cmd.type === 'CANVAS_SNAPSHOT' || cmd.type === 'DELETE' || cmd.type === 'DUPLICATE') {
-                    // Full structural restore from snapshot
-                    window.editorStateManager.applyState(stateToApply);
-
-                    // Clear selection handles after full restore
-                    hideSelectionHandles();
                 }
 
                 // Signal back to parent that application is complete
