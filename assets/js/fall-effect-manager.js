@@ -20,6 +20,9 @@
     petals2: "petals2-effect.js",
     sakura: "sakura-effect.js",
     hearts: "hearts-effect.js",
+    bubbles: "bubbles-effect.js",
+    stardust: "stardust-effect.js",
+    fireflies: "fireflies-effect.js",
     "canvas-hearts": "canvas-hearts-effect.js",
     leaves: "leaves-effect.js",
     custom: "custom-icon-effect.js",
@@ -31,6 +34,9 @@
     petals2: { count: 80, speed: 9, sway: 3, spawnInterval: 850 },
     sakura: { count: 46, speed: 8, sway: 9, spawnInterval: 0 },
     hearts: { count: 10, speed: 8, bounce: 0.6, spawnInterval: 950 },
+    bubbles: { count: 18, speed: 14, sway: 5, spawnInterval: 1200 },
+    stardust: { count: 24, speed: 16, sway: 6, spawnInterval: 900 },
+    fireflies: { count: 26, speed: 18, sway: 8, spawnInterval: 850 },
     "canvas-hearts": { count: 40, speed: 1, spawnInterval: 1000 },
     leaves: { count: 60, speed: 1, spawnInterval: 1000 },
     custom: { count: 10, speed: 9, defaultIcon: "*", spawnInterval: 1200 },
@@ -106,7 +112,7 @@
     this.requestVersion = 0;
     this.__supportsCustomIcons = true;
     this.__supportsSnowIcon = true;
-    this.__version = "2.1.0";
+    this.__version = "2.2.0";
   }
 
   /**

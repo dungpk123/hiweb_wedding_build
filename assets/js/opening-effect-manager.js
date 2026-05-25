@@ -10,6 +10,10 @@ if (window.openingEffectManager) {
         video: "/assets/animations/opening/video.js",
         heartcard: "/assets/animations/opening/heart-card.js",
         envelope: "/assets/animations/opening/envelope.js",
+        saveDateBloom: "/assets/animations/opening/save-date-bloom.js",
+        savedatebloom: "/assets/animations/opening/save-date-bloom.js",
+        weddingDoorCurtain: "/assets/animations/opening/wedding-door-curtain.js",
+        weddingdoorcurtain: "/assets/animations/opening/wedding-door-curtain.js",
       };
       this.currentEffect = null;
       this.shadowRoot = null;
@@ -134,7 +138,13 @@ if (window.openingEffectManager) {
 
     loadEffectScript() {
       const scriptUrl = this.effectMap[this.currentEffect];
-      if (!scriptUrl) return;
+      if (!scriptUrl) {
+        console.warn(
+          `Opening Effect: Unknown effect "${this.currentEffect}", cleaning up overlay.`,
+        );
+        this.cleanup();
+        return;
+      }
 
       const oldScript = document.querySelector(`script[data-opening-script]`);
       if (oldScript) oldScript.remove();
