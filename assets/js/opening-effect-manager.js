@@ -1,8 +1,26 @@
-if (window.openingEffectManager) {
+var OPENING_EFFECT_MANAGER_VERSION = "save-date-visible-1";
+
+if (
+  window.openingEffectManager &&
+  window.openingEffectManager.__version === OPENING_EFFECT_MANAGER_VERSION
+) {
   console.log("Opening Effect: Script already loaded, skipping");
 } else {
+  const previousOpeningEffectManager = window.openingEffectManager;
+  if (
+    previousOpeningEffectManager &&
+    typeof previousOpeningEffectManager.cleanup === "function"
+  ) {
+    try {
+      previousOpeningEffectManager.cleanup();
+    } catch (e) {
+      console.warn("Opening Effect: Failed to cleanup previous manager", e);
+    }
+  }
+
   class OpeningEffectManager {
     constructor() {
+      this.__version = OPENING_EFFECT_MANAGER_VERSION;
       this.effectMap = {
         door: "/assets/animations/opening/wedding-gate.js",
         flower: "/assets/animations/opening/flower.js",
@@ -93,6 +111,8 @@ if (window.openingEffectManager) {
       const effectId =
         overrideEffectId ||
         introEl.getAttribute("data-opening-effect") ||
+        document.body?.getAttribute("data-opening-effect") ||
+        document.documentElement?.getAttribute("data-opening-effect") ||
         urlParams.get("opening_effect");
 
       if (!effectId || effectId === "none") {
@@ -109,6 +129,12 @@ if (window.openingEffectManager) {
      * Thiết lập Shadow DOM bên trong #intro
      */
     setupShadowDOM(introEl) {
+      introEl.classList.remove("away");
+
+      if (!this.shadowRoot && introEl.shadowRoot) {
+        this.shadowRoot = introEl.shadowRoot;
+      }
+
       if (!this.shadowRoot) {
         this.shadowRoot = introEl.attachShadow({ mode: "open" });
       }
@@ -150,7 +176,11 @@ if (window.openingEffectManager) {
       if (oldScript) oldScript.remove();
 
       const script = document.createElement("script");
-      script.src = scriptUrl;
+      script.src =
+        scriptUrl +
+        (scriptUrl.includes("?") ? "&" : "?") +
+        "v=" +
+        OPENING_EFFECT_MANAGER_VERSION;
       script.setAttribute("data-opening-script", this.currentEffect);
       script.defer = true;
 
